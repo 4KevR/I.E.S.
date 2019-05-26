@@ -17,11 +17,13 @@ CLIENTS = ['192.168.1.26', '192.168.1.27', '192.168.1.28', '192.168.1.29']
 USERNAME = ['PHOTOVOLTAIK', 'WINDKRAFT', 'GEOTHERMIE', 'BIOGAS']
 PASSWORD = ['clientTA52', 'clientRA54', 'clientRM56', 'clientOG58']
 PORT = 55555
-wait = 0.4
+wait = 0.3
 shutdown = ["sudo /sbin/shutdown -r now\n", "sudo /sbin/shutdown -h now\n"]
 
 #gibt an, wie viele der Requests in der Datei schon ausgeführt wurden 
 textCount = 0
+
+Barriere = th.Barrier(5)
 
 #lege Log-Datei an
 if not "noLogsave" in sys.argv:
@@ -35,10 +37,8 @@ class DataHandle():
         self.input = [[0],[0],[0],[0]]
         self.inputRequest = ["","","",""]
         self.output = ["Back","Back","Back","Back"]
-        self.storeEnergy = 10
+        self.storeEnergy = 0
         self.__closeServer = 0
-        self.barriercount = 5
-        self.Barriere = th.Barrier(self.barriercount)
     
     def setCloseServer(self):
         self.__closeServer += 1
@@ -102,25 +102,28 @@ def new_client(conn, addr, name):
                 dHandle.inputRequest[name] = message[5]
             except ValueError:
                 log("Value Error: recv() got no response", str(addr[0]))
-            dHandle.Barriere.wait()
-            dHandle.Barriere.wait()
+            Barriere.wait()
+            Barriere.wait()
             conn.sendall(bytes(dHandle.output[name], "utf-8"))
         conn.close()
     except socket.error:
         conn.close()
         log("One client broke the connection", str(addr[0]))
-        with open("/home/BRAIN/ies/data.txt", "w") as serverdisconnected:
-            serverdisconnected.write("0")
+        with open("/home/BRAIN/ies/queue.txt", "w") as filedelete:
+            filedelete.write("")
+        with open("/home/BRAIN/ies/savedEnergy.txt", "w") as saveNewEnergy:
+            saveNewEnergy.write(str(storedEnergy))
+        stopWeather.set()
         dHandle.setCloseServer()
         while dHandle.getCloseServer() != 2:
-            dHandle.Barriere.wait()
+            Barriere.wait()
     
 def network_handle():
     counter = 0
     while not dHandle.getCloseServer() == 2:
         log("Warte auf Dateneingang...", handle.getName())
         
-        dHandle.Barriere.wait()
+        Barriere.wait()
         
         log("Rohinput: "+str(dHandle.input), handle.getName())
         allProduktion = dHandle.input[0][1]+dHandle.input[1][1]+dHandle.input[2][1]+dHandle.input[3][1]
@@ -144,11 +147,38 @@ def network_handle():
                        "Geothermie_Effizienz="+str(dHandle.input[2][0])+"\nGeothermie_Produktion="+str(dHandle.input[2][1])+"\nGeothermie_Verbrauch="+str(dHandle.input[2][2])+"\nGeothermie_BesteProduktion="+str(dHandle.input[2][3])+"\nGeothermie_MaximalmöglicheProduktion="+str(dHandle.input[2][4])+"\n"+
                        "Biogas_Effizienz="+str(dHandle.input[3][0])+"\nBiogas_Produktion="+str(dHandle.input[3][1])+"\nBiogas_Verbrauch="+str(dHandle.input[3][2])+"\nBiogas_BesteProduktion="+str(dHandle.input[3][3])+"\nBiogas_MaximalmöglicheProduktion="+str(dHandle.input[3][4]))
         
+        #Management für das Empfangen von Energie
         for i in range(4):
-            if dHandle.input[i][5] != "":
-                dHandle.output[i] = "accepted"
-            else:
-                dHandle.output[i] = ""
+            dHandle.output[i] = ""
+            if i in need:
+                log("Haus "+str(i)+" braucht "+str(need[i])+"W an Energie", handle.getName())
+                for client,w in give.items():
+                    while need[i] > 0:
+                        if w >= need[i]:
+                            give[client] -= need[i]
+                            dHandle.output[i] += str(client) + " " + str(need[i]) + "  "
+                            need[i] = 0
+                        else:
+                            need[i] = need[i] - w
+                            give[client] = 0
+                            dHandle.output[i] += str(client) + " " + str(need[i]) + "  "
+                        
+        #Management für das Geben von Energie
+        for i in range(4):
+            if i in give:
+                if dHandle.input[i][1]-dHandle.input[i][2] != give[i]:
+                    dHandle.output[i] += str(dHandle.input[i][1]-dHandle.input[i][2]-give[i]) + "  "
+        log(str(dHandle.output), "Data Handle")
+        
+        #Management für das Akzenptieren von Requests
+        for i in range(4):
+            if dHandle.output[i] == "":
+                dHandle.output[i] = "none"
+            if dHandle.inputRequest[i] != "none":
+                dHandle.output[i] += "||request accepted"
+                
+        dHandle.storeEnergy = sum([w for giver,w in give.items()])
+        log(str(dHandle.storeEnergy), handle.getName())
         
         if dHandle.getCloseServer():
             print("Close accepted", handle.getName())
@@ -159,7 +189,7 @@ def network_handle():
                 deleteData.write(str(0))
         time.sleep(wait)
         
-        dHandle.Barriere.wait()
+        Barriere.wait()
         
         counter += 1
     
@@ -200,8 +230,10 @@ def SSH(mode):
                 log("Altes Programm wurde entfernt", "Main")
             else:
                 log(error, "Main")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /home/"+USERNAME[i]+"/ies/"+"*.req")
             sftp_client = ssh_client.open_sftp()
             sftp_client.put('/home/BRAIN/ies/Clients/'+USERNAME[i]+'.py','/home/'+USERNAME[i]+'/ies/'+USERNAME[i]+'.py')
+            sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/home/'+USERNAME[i]+'/ies/'+'request.txt')
             sftp_client.close()
             log("Neues Programm wurde übertragen", "Main")
             if not "noNetwork" in sys.argv and not "noExecute" in sys.argv:
