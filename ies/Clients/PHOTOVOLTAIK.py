@@ -20,10 +20,14 @@ i2c = busio.I2C(board.SCL, board.SDA)
 temp = ads.ADS1115(i2c)
 temp.gain = 2/3
 chantemp = AnalogIn(temp, ads.P0)
+normFaktor = int(chantemp.value-100)
 
 #GPIO-Pins
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(26, GPIO.OUT)
+GPIO.setup(20, GPIO.OUT)
+GPIO.output(26, GPIO.LOW)
+GPIO.output(20, GPIO.HIGH)
 
 #Netzwerk
 HOST = '192.168.1.25'
@@ -43,13 +47,14 @@ with open("/home/PHOTOVOLTAIK/ies/log.txt", "w") as filelog:
 #Klassen des Programms
 class DataHandle():
     def __init__(self):
-        self.output = ["0","0","0","0","0","none"]
+        self.output = ["0","0","0","0","6000","none"]
         self.input = ""
-        self.energystate = []
+        self.energystate = {}
         self.openrequests = []
         self.__closeServer = 0
         self.__verbraucher = {
-            "Lampe":[18,26,0]
+            "Lampe":[1000,26,0],
+            "Auto":[18000,20,1]
             }
         
     def setCloseServer(self):
@@ -59,7 +64,13 @@ class DataHandle():
         return self.__closeServer
     
     def getVerbrauch(self):
-        return str(sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1]))#+sum([entry[0] for key, entry in self.energystate[0].items()])
+        log(str(self.energystate), "getVerbrauch")
+        ret = sum([entry[0] for key, entry in self.__verbraucher.items() if (entry[2] == 1 and key != "Auto") or (entry[2] == 0 and key == "Auto")])
+        #try:
+            #ret += self.energystate
+        #except TypeError:
+            #ret += 0
+        return str(ret) 
     
     def getPin(self, device):
         return self.__verbraucher[device][1]
@@ -69,6 +80,7 @@ class DataHandle():
     
     def invertState(self, device):
         self.__verbraucher[device][2] = (self.__verbraucher[device][2]+1)%2
+        GPIO.output(self.__verbraucher[device][1], self.__verbraucher[device][2])
 
 #Funktionen des Programms
 def log(text, bez):
@@ -114,16 +126,22 @@ def handleData():
             if reply == "request accepted":
                 log("request was accepted", "handleData")
                 dHandle.invertState(dHandle.openrequests[0][1])
-                GPIO.output(dHandle.getPin(dHandle.openrequests[0][1]), dHandle.getState(dHandle.openrequests[0][1]))
-                with open("/home/PHOTOVOLTAIK/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("accepted")
                 log("success", "handleData")
+                if dHandle.openrequests[0][1] == "Auto":
+                    autooff = th.Thread(target=auto_off)
+                    autooff.start()
                 del dHandle.openrequests[0]
             elif reply == "request denied":
-                with open("/home/PHOTOVOLTAIK/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("denied")
                 del dHandle.openrequests[0]
-            dHandle.output[5] = "none"  
+            dHandle.output[5] = "none"
+
+def auto_off():
+    time.sleep(10)
+    dHandle.invertState("Auto")
             
 ######################################################################### 
 #Programm
@@ -141,8 +159,8 @@ if not "noNetwork" in sys.argv:
 #Main
 while not dHandle.getCloseServer():
     #Requestdatei lesen
-    with open("/home/PHOTOVOLTAIK/ies/request.txt", "r") as file:
-        for line in islice(file, textCount, sum(1 for line in open("/home/PHOTOVOLTAIK/ies/request.txt"))):
+    with open("/var/www/html/input/request.txt", "r") as file:
+        for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/request.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
             while dHandle.output[5] != "none":
                 pass
@@ -157,9 +175,14 @@ while not dHandle.getCloseServer():
     log(str(chantemp.value), "Main")
     log(str(chantemp.voltage), "Main")
     
-    averageSol = str(int(chantemp.value*1))
+    averageSol = (chantemp.value-normFaktor)*6
+    if averageSol < 0:
+        averageSol = 0
     
-    dHandle.output[1] = averageSol
+    if averageSol > int(dHandle.output[4]):
+        dHandle.output[1] = dHandle.output[4]
+    else:
+        dHandle.output[1] = str(averageSol)
     dHandle.output[2] = dHandle.getVerbrauch()
     
     Barriere.wait()

@@ -17,7 +17,7 @@ CLIENTS = ['192.168.1.26', '192.168.1.27', '192.168.1.28', '192.168.1.29']
 USERNAME = ['PHOTOVOLTAIK', 'WINDKRAFT', 'GEOTHERMIE', 'BIOGAS']
 PASSWORD = ['clientTA52', 'clientRA54', 'clientRM56', 'clientOG58']
 PORT = 55555
-wait = 0.3
+wait = 0.5
 shutdown = ["sudo /sbin/shutdown -r now\n", "sudo /sbin/shutdown -h now\n"]
 
 #gibt an, wie viele der Requests in der Datei schon ausgeführt wurden 
@@ -109,9 +109,9 @@ def new_client(conn, addr, name):
     except socket.error:
         conn.close()
         log("One client broke the connection", str(addr[0]))
-        with open("/home/BRAIN/ies/queue.txt", "w") as filedelete:
+        with open("/var/www/html/input/queue.txt", "w") as filedelete:
             filedelete.write("")
-        with open("/home/BRAIN/ies/savedEnergy.txt", "w") as saveNewEnergy:
+        with open("/var/www/html/output/savedEnergy.txt", "w") as saveNewEnergy:
             saveNewEnergy.write(str(storedEnergy))
         stopWeather.set()
         dHandle.setCloseServer()
@@ -128,6 +128,8 @@ def network_handle():
         log("Rohinput: "+str(dHandle.input), handle.getName())
         allProduktion = dHandle.input[0][1]+dHandle.input[1][1]+dHandle.input[2][1]+dHandle.input[3][1]
         allVerbrauch = dHandle.input[0][2]+dHandle.input[1][2]+dHandle.input[2][2]+dHandle.input[3][2]
+        allEffizienz = (dHandle.input[0][0]+dHandle.input[1][0]+dHandle.input[2][0]+dHandle.input[3][0])/4
+        maxProduktion = dHandle.input[0][4]+dHandle.input[1][4]+dHandle.input[2][4]+dHandle.input[3][4]
         
         need = {}
         give = {}
@@ -141,11 +143,12 @@ def network_handle():
         log("Verbrauch: "+str(allVerbrauch), handle.getName())
         log("Energie benötigt: "+str(need), handle.getName())
         log("Kann Energie geben: "+str(give), handle.getName())
-        with open("/home/BRAIN/ies/data.txt", "w") as save:
+        with open("/var/www/html/output/data.txt", "w") as save:
             save.write("Photovoltaik_Effizienz="+str(dHandle.input[0][0])+"\nPhotovoltaik_Produktion="+str(dHandle.input[0][1])+"\nPhotovoltaik_Verbrauch="+str(dHandle.input[0][2])+"\nPhotovoltaik_BesteProduktion="+str(dHandle.input[0][3])+"\nPhotovoltaik_MaximalmöglicheProduktion="+str(dHandle.input[0][4])+"\n"+
                        "Windkraft_Effizienz="+str(dHandle.input[1][0])+"\nWindkraft_Produktion="+str(dHandle.input[1][1])+"\nWindkraft_Verbrauch="+str(dHandle.input[1][2])+"\nWindkraft_BesteProduktion="+str(dHandle.input[1][3])+"\nWindkraft_MaximalmöglicheProduktion="+str(dHandle.input[1][4])+"\n"+
                        "Geothermie_Effizienz="+str(dHandle.input[2][0])+"\nGeothermie_Produktion="+str(dHandle.input[2][1])+"\nGeothermie_Verbrauch="+str(dHandle.input[2][2])+"\nGeothermie_BesteProduktion="+str(dHandle.input[2][3])+"\nGeothermie_MaximalmöglicheProduktion="+str(dHandle.input[2][4])+"\n"+
-                       "Biogas_Effizienz="+str(dHandle.input[3][0])+"\nBiogas_Produktion="+str(dHandle.input[3][1])+"\nBiogas_Verbrauch="+str(dHandle.input[3][2])+"\nBiogas_BesteProduktion="+str(dHandle.input[3][3])+"\nBiogas_MaximalmöglicheProduktion="+str(dHandle.input[3][4]))
+                       "Biogas_Effizienz="+str(dHandle.input[3][0])+"\nBiogas_Produktion="+str(dHandle.input[3][1])+"\nBiogas_Verbrauch="+str(dHandle.input[3][2])+"\nBiogas_BesteProduktion="+str(dHandle.input[3][3])+"\nBiogas_MaximalmöglicheProduktion="+str(dHandle.input[3][4])+"\n"+
+                       "BRAIN_Produktion="+str(allProduktion)+"\nBRAIN_Verbrauch="+str(allVerbrauch)+"\nBRAIN_storedEnergy="+str(int(storedEnergy))+"\nBRAIN_Effizienz="+str(allEffizienz)+"\nBRAIN_MaximalmöglicheProduktion="+str(maxProduktion))
         
         #Management für das Empfangen von Energie
         for i in range(4):
@@ -153,15 +156,18 @@ def network_handle():
             if i in need:
                 log("Haus "+str(i)+" braucht "+str(need[i])+"W an Energie", handle.getName())
                 for client,w in give.items():
-                    while need[i] > 0:
-                        if w >= need[i]:
-                            give[client] -= need[i]
-                            dHandle.output[i] += str(client) + " " + str(need[i]) + "  "
-                            need[i] = 0
-                        else:
-                            need[i] = need[i] - w
-                            give[client] = 0
-                            dHandle.output[i] += str(client) + " " + str(need[i]) + "  "
+                    if w >= need[i]:
+                        give[client] -= need[i]
+                        dHandle.output[i] += str(client) + " " + str(need[i]) + "  "
+                        need[i] = 0
+                    else:
+                        need[i] = need[i] - w
+                        dHandle.output[i] += str(client) + " " + str(w) + "  "
+                        give[client] = 0
+                    if need[i] == 0:
+                        break
+                if need[i] > 0:
+                    log("Es gibt zu wenig Energie im System", handle.getName())
                         
         #Management für das Geben von Energie
         for i in range(4):
@@ -185,31 +191,30 @@ def network_handle():
             dHandle.output = ["close" for i in range(0,4)]
             log(str(dHandle.output), handle.getName())
             dHandle.setCloseServer()
-            with open("/home/BRAIN/ies/data.txt", "w") as deleteData:
+            with open("/var/www/html/output/data.txt", "w") as deleteData:
                 deleteData.write(str(0))
         time.sleep(wait)
         
         Barriere.wait()
-        
         counter += 1
     
 def queue(command):
     if command == "close" or command == "restart" or command == "clean restart" or command == "reboot" or command == "shutdown":
         log("Befehl zum Beenden des Programms", "Main")
         dHandle.setCloseServer()
-        with open("/home/BRAIN/ies/queue.txt", "w") as filedelete:
+        with open("/var/www/html/input/queue.txt", "w") as filedelete:
             filedelete.write("")
-        with open("/home/BRAIN/ies/savedEnergy.txt", "w") as saveNewEnergy:
+        with open("/var/www/html/output/savedEnergy.txt", "w") as saveNewEnergy:
             saveNewEnergy.write(str(storedEnergy))
         stopWeather.set()
         if command == "restart" or command == "clean restart":
             if command == "clean restart":
                 log("Befehl zum sauberen Neustarten des Programms", "Main")
-                with open("/home/BRAIN/ies/savedEnergy.txt", "w") as resetEnergy:
+                with open("/var/www/html/output/savedEnergy.txt", "w") as resetEnergy:
                     resetEnergy.write("0")
             else:
                 log("Befehl zum Neustarten des Programms", "Main")
-            os.system("python3 /home/BRAIN/ies/BRAIN_RESTART.py restart")
+            os.system("screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py restart")
         if command == "reboot":
             SSH(1)
             os.system("screen -dmS reboot python3 /home/BRAIN/ies/BRAIN_RESTART.py reboot")
@@ -230,10 +235,10 @@ def SSH(mode):
                 log("Altes Programm wurde entfernt", "Main")
             else:
                 log(error, "Main")
-            stdin, stdout, stderr = ssh_client.exec_command("rm /home/"+USERNAME[i]+"/ies/"+"*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output*.req")
             sftp_client = ssh_client.open_sftp()
             sftp_client.put('/home/BRAIN/ies/Clients/'+USERNAME[i]+'.py','/home/'+USERNAME[i]+'/ies/'+USERNAME[i]+'.py')
-            sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/home/'+USERNAME[i]+'/ies/'+'request.txt')
+            sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/var/www/html/input/request.txt')
             sftp_client.close()
             log("Neues Programm wurde übertragen", "Main")
             if not "noNetwork" in sys.argv and not "noExecute" in sys.argv:
@@ -280,19 +285,19 @@ if not "noSSH" in sys.argv:
     SSH(0)
 
 #Main
-with open("/home/BRAIN/ies/savedEnergy.txt", "r") as getStoredEnergy:
+with open("/var/www/html/output/savedEnergy.txt", "r") as getStoredEnergy:
     #Energie ist in Joule gespeichert
     storedEnergy = float(getStoredEnergy.readlines()[0])
 while not dHandle.getCloseServer():
     #Überprüfe, ob sich etwas etwas neues in der Request Datei hinzugekommen ist, um es in die Warteschlange hinzuzufügen
-    with open("/home/BRAIN/ies/queue.txt", "r") as file:
-        for line in islice(file, textCount, sum(1 for line in open("/home/BRAIN/ies/queue.txt"))):
+    with open("/var/www/html/input/queue.txt", "r") as file:
+        for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/queue.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
             if line.strip() != "" and not dHandle.getCloseServer():
                 newReq = th.Thread(target=queue, args=[line.strip()])
                 newReq.start()
                 textCount += 1
-    storedEnergy += dHandle.storeEnergy*0.05
+    storedEnergy += dHandle.storeEnergy*0.5*0.05
     time.sleep(0.05)
 
 time.sleep(1)

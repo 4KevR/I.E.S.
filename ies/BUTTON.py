@@ -53,7 +53,7 @@ class SMD(th.Thread):
                 self.light(0,0,1)
             elif testactive():
                 self.light(0,1,0)
-                with open("/home/BRAIN/ies/data.txt", "r") as file:
+                with open("/var/www/html/output/data.txt", "r") as file:
                     text = file.readlines()
                     if len(text) > 0 and text[0] == "0":
                         time.sleep(0.2)
@@ -84,7 +84,7 @@ def testactive():
 
 def write(task):
     if testactive() and lights.state == 0:
-        with open("/home/BRAIN/ies/queue.txt", "a") as file:
+        with open("/var/www/html/input/queue.txt", "a") as file:
             file.write(task+"\n")
     else:
         log("Starte zuerst das Programm oder Task wurde schon gestartet...")

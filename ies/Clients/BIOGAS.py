@@ -13,6 +13,9 @@ from itertools import islice
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(21,GPIO.IN)
 GPIO.setup(26, GPIO.OUT)
+GPIO.setup(20, GPIO.OUT)
+GPIO.output(26, GPIO.LOW)
+GPIO.output(20, GPIO.LOW)
 
 #Netzwerk
 HOST = '192.168.1.25'
@@ -32,13 +35,14 @@ with open("/home/BIOGAS/ies/log.txt", "w") as filelog:
 #Klassen des Programms
 class DataHandle():
     def __init__(self):
-        self.output = ["0","0","0","0","0","none"]
+        self.output = ["0","0","0","0","30000","none"]
         self.input = ""
         self.energystate = []
         self.openrequests = []
         self.__closeServer = 0
         self.__verbraucher = {
-            "Lampe":[18,26,0]
+            "Lampe":[1000,26,0],
+            "Waschmaschiene":[3000,20,0]
             }
         
     def setCloseServer(self):
@@ -49,7 +53,8 @@ class DataHandle():
         return self.__closeServer
     
     def getVerbrauch(self):
-        return str(sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1]))
+        ret = sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1])
+        return str(ret) 
     
     def getPin(self, device):
         return self.__verbraucher[device][1]
@@ -59,6 +64,7 @@ class DataHandle():
     
     def invertState(self, device):
         self.__verbraucher[device][2] = (self.__verbraucher[device][2]+1)%2
+        GPIO.output(dHandle.__verbraucher[device][1], dHandle.__verbrauch[device][2])
 
 class Energy(th.Thread):
     def __init__(self):
@@ -80,17 +86,17 @@ class Energy(th.Thread):
     def run(self):
         while self.end:
             if GPIO.input(21) == GPIO.HIGH:
-                self.energy += 0.003*(40000-self.energy)
+                self.energy += 0.004*(30000-self.energy)
                 while GPIO.input(21) == GPIO.HIGH:
                     pass
                 
 class Stepper(th.Thread):
     def __init__(self):
         th.Thread.__init__(self)
-        self.__stepper1 = 17
-        self.__stepper2 = 18
-        self.__stepper3 = 27
-        self.__stepper4 = 22
+        self.__stepper1 = 22
+        self.__stepper2 = 27
+        self.__stepper3 = 18
+        self.__stepper4 = 17
         GPIO.setup(self.__stepper1,GPIO.OUT)
         GPIO.setup(self.__stepper2,GPIO.OUT)
         GPIO.setup(self.__stepper3,GPIO.OUT)
@@ -106,14 +112,14 @@ class Stepper(th.Thread):
     def run(self):
         while energy.end:
             if int(energy.energy) > 5000:
+                self.step(1,0,0,0)
                 self.step(1,1,0,0)
-                #self.step(0,1,0,0)
+                self.step(0,1,0,0)
                 self.step(0,1,1,0)
-                #self.step(0,0,1,0)
+                self.step(0,0,1,0)
                 self.step(0,0,1,1)
-                #self.step(0,0,0,1)
+                self.step(0,0,0,1)
                 self.step(1,0,0,1)
-                #self.step(1,0,0,0)
             else:
                 self.step(0,0,0,0)
 
@@ -161,13 +167,12 @@ def handleData():
             if reply == "request accepted":
                 log("request was accepted", "handleData")
                 dHandle.invertState(dHandle.openrequests[0][1])
-                GPIO.output(dHandle.getPin(dHandle.openrequests[0][1]), dHandle.getState(dHandle.openrequests[0][1]))
-                with open("/home/BIOGAS/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("accepted")
                 log("success", "handleData")
                 del dHandle.openrequests[0]
             elif reply == "request denied":
-                with open("/home/BIOGAS/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("denied")
                 del dHandle.openrequests[0]
             dHandle.output[5] = "none" 
@@ -192,8 +197,8 @@ if not "noNetwork" in sys.argv:
 #Main
 while not dHandle.getCloseServer():
     #Requestdatei lesen
-    with open("/home/BIOGAS/ies/request.txt", "r") as file:
-        for line in islice(file, textCount, sum(1 for line in open("/home/BIOGAS/ies/request.txt"))):
+    with open("/var/www/html/input/request.txt", "r") as file:
+        for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/request.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
             while dHandle.output[5] != "none":
                 pass
@@ -208,4 +213,5 @@ while not dHandle.getCloseServer():
     dHandle.output[2] = dHandle.getVerbrauch()
     
     Barriere.wait()
+    
 log("Beendet", "Main")

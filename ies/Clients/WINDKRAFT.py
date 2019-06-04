@@ -12,7 +12,10 @@ from itertools import islice
 #GPIO-Pins
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(4,GPIO.IN)
-GPIO.setup(26, GPIO.OUT)
+GPIO.setup(26,GPIO.OUT)
+GPIO.setup(20,GPIO.OUT)
+GPIO.output(26, GPIO.LOW)
+GPIO.output(20, GPIO.LOW)
 
 #Netzwerk
 HOST = '192.168.1.25'
@@ -32,13 +35,14 @@ with open("/home/WINDKRAFT/ies/log.txt", "w") as filelog:
 #Klassen des Programms
 class DataHandle():
     def __init__(self):
-        self.output = ["0","0","0","0","0","none"]
+        self.output = ["0","0","0","0","10000","none"]
         self.input = ""
         self.energystate = []
         self.openrequests = []
         self.__closeServer = 0
         self.__verbraucher = {
-            "Lampe":[18,26,0]
+            "Lampe":[1000,26,0],
+            "Herd":[7000,20,0]
             }
         
     def setCloseServer(self):
@@ -49,7 +53,8 @@ class DataHandle():
         return self.__closeServer
     
     def getVerbrauch(self):
-        return str(sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1]))
+        ret = sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1])
+        return str(ret) 
     
     def getPin(self, device):
         return self.__verbraucher[device][1]
@@ -59,6 +64,7 @@ class DataHandle():
     
     def invertState(self, device):
         self.__verbraucher[device][2] = (self.__verbraucher[device][2]+1)%2
+        GPIO.output(dHandle.__verbraucher[device][1], dHandle.__verbrauch[device][2])
 
 class Energy(th.Thread):
     def __init__(self):
@@ -71,7 +77,7 @@ class Energy(th.Thread):
         
     def avrg(self):
         while self.end:
-            time.sleep(0.2)
+            time.sleep(1)
             self.speed = self.__count
             self.__count = 0
             log(str(self.speed), "Energy")
@@ -127,13 +133,12 @@ def handleData():
             if reply == "request accepted":
                 log("request was accepted", "handleData")
                 dHandle.invertState(dHandle.openrequests[0][1])
-                GPIO.output(dHandle.getPin(dHandle.openrequests[0][1]), dHandle.getState(dHandle.openrequests[0][1]))
-                with open("/home/WINDKRAFT/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("accepted")
                 log("success", "handleData")
                 del dHandle.openrequests[0]
             elif reply == "request denied":
-                with open("/home/WINDKRAFT/ies/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
                     requestWrite.write("denied")
                 del dHandle.openrequests[0]
             dHandle.output[5] = "none" 
@@ -158,8 +163,8 @@ if not "noNetwork" in sys.argv:
 #Main
 while not dHandle.getCloseServer():
     #Requestdatei lesen
-    with open("/home/WINDKRAFT/ies/request.txt", "r") as file:
-        for line in islice(file, textCount, sum(1 for line in open("/home/WINDKRAFT/ies/request.txt"))):
+    with open("/var/www/html/input/request.txt", "r") as file:
+        for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/request.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
             while dHandle.output[5] != "none":
                 pass
@@ -170,8 +175,12 @@ while not dHandle.getCloseServer():
                 textCount += 1
                 
     #Sensordaten hinzufügen
-    dHandle.output[1] = str(energy.speed)
+    if energy.speed*500 > int(dHandle.output[4]):
+        dHandle.output[1] = dHandle.output[4]
+    else:    
+        dHandle.output[1] = str(energy.speed*500)
     dHandle.output[2] = dHandle.getVerbrauch()
     
     Barriere.wait()
+    
 log("Beendet", "Main")
