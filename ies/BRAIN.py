@@ -36,9 +36,20 @@ class DataHandle():
     def __init__(self):
         self.input = [[0],[0],[0],[0]]
         self.inputRequest = ["","","",""]
+        self.openrequestsBat = []
+        self.openrequestsPow = []
         self.output = ["Back","Back","Back","Back"]
         self.storeEnergy = 0
+        self.giveEnergy = 0
+        self.givePowerGrid = [0, 0] # [0] steht für den Verriegelungsstatus, [1] steht für die Energie, die aus dem Netz genommen wird
         self.__closeServer = 0
+        self.verbraucher = {
+            "Lampe":1000,
+            "Auto":18000,
+            "Herd":7000,
+            "Fernseher":800,
+            "Waschmaschiene":3000
+            }
     
     def setCloseServer(self):
         self.__closeServer += 1
@@ -181,7 +192,28 @@ def network_handle():
             if dHandle.output[i] == "":
                 dHandle.output[i] = "none"
             if dHandle.inputRequest[i] != "none":
-                dHandle.output[i] += "||request accepted"
+                if len(dHandle.inputRequest[i].split(" ")) > 1:
+                    #Batteryrequests
+                    if str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsBat and dHandle.inputRequest[i].split(" ")[1] == "accepted":
+                        dHandle.openrequestsBat.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                    elif str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsBat and dHandle.inputRequest[i].split(" ")[1] == "declined":
+                        dHandle.openrequestsBat.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                        
+                    #Power-Grid Requests
+                    if str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsPow and dHandle.inputRequest[i].split(" ")[1] == "accepted":
+                        dHandle.openrequestsPow.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                    elif str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsPow and dHandle.inputRequest[i].split(" ")[1] == "declined":
+                        dHandle.openrequestsPow.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                    
+                #Allgemeiene Steuerung
+                elif dHandle.verbraucher[dHandle.inputRequest[i]] < allProduktion-allVerbrauch:
+                    dHandle.output[i] += "||request accepted"
+                elif storedEnergy > 0:
+                    dHandle.output[i] += "||request denied - Energy from battery?"
+                    dHandle.openrequestsBat.append(str(i)+" "+dHandle.inputRequest[i])
+                else:
+                    dHandle.output[i] += "||request denied - Energy from public power grid?"
+                    dHandle.openrequestsPow.append(str(i)+" "+dHandle.inputRequest[i])
                 
         dHandle.storeEnergy = sum([w for giver,w in give.items()])
         log(str(dHandle.storeEnergy), handle.getName())
@@ -235,7 +267,9 @@ def SSH(mode):
                 log("Altes Programm wurde entfernt", "Main")
             else:
                 log(error, "Main")
-            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output/*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/input/*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("killall screen")
             sftp_client = ssh_client.open_sftp()
             sftp_client.put('/home/BRAIN/ies/Clients/'+USERNAME[i]+'.py','/home/'+USERNAME[i]+'/ies/'+USERNAME[i]+'.py')
             sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/var/www/html/input/request.txt')
@@ -297,7 +331,7 @@ while not dHandle.getCloseServer():
                 newReq = th.Thread(target=queue, args=[line.strip()])
                 newReq.start()
                 textCount += 1
-    storedEnergy += dHandle.storeEnergy*0.5*0.05
+    storedEnergy += (dHandle.storeEnergy*0.5-dHandle.giveEnergy)*0.05
     time.sleep(0.05)
 
 time.sleep(1)

@@ -8,6 +8,8 @@ import threading as th
 import sys
 import RPi.GPIO as GPIO
 from itertools import islice
+from pathlib import Path
+import os
 
 #Analog-Digital Wandler
 import board
@@ -20,7 +22,7 @@ i2c = busio.I2C(board.SCL, board.SDA)
 temp = ads.ADS1115(i2c)
 temp.gain = 2/3
 chantemp = AnalogIn(temp, ads.P0)
-normFaktor = int(chantemp.value-100)
+normFaktor = int(chantemp.value-30)
 
 #GPIO-Pins
 GPIO.setmode(GPIO.BCM)
@@ -51,6 +53,7 @@ class DataHandle():
         self.input = ""
         self.energystate = {}
         self.openrequests = []
+        self.openexternalrequests = []
         self.__closeServer = 0
         self.__verbraucher = {
             "Lampe":[1000,26,0],
@@ -102,6 +105,7 @@ def connect_server():
             log("Warte auf Erhalten von Energiedaten",t.getName())
             Barriere.wait()
             s.sendall(bytes(",".join(dHandle.output), "utf-8"))
+            dHandle.output[5] = "none"
             dHandle.input = s.recv(1024).decode("utf-8")
             log("Input: "+dHandle.input, t.getName())
             if dHandle.input == "close":
@@ -127,17 +131,47 @@ def handleData():
                 log("request was accepted", "handleData")
                 dHandle.invertState(dHandle.openrequests[0][1])
                 with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
-                    requestWrite.write("accepted")
+                    requestWrite.write("request accepted")
                 log("success", "handleData")
                 if dHandle.openrequests[0][1] == "Auto":
                     autooff = th.Thread(target=auto_off)
                     autooff.start()
-                del dHandle.openrequests[0]
-            elif reply == "request denied":
+            elif reply == "request denied - Energy from battery?":
                 with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
-                    requestWrite.write("denied")
-                del dHandle.openrequests[0]
+                    requestWrite.write("request denied - Energy from battery?")
+                if " ".join(dHandle.openrequests[0]) not in dHandle.openexternalrequests:
+                    dHandle.openexternalrequests.append(" ".join(dHandle.openrequests[0]))
+            elif reply == "request denied - Energy from public power grid?":
+                with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
+                    requestWrite.write("request denied - Energy from public power grid?")
+                if " ".join(dHandle.openrequests[0]) not in dHandle.openexternalrequests:
+                    dHandle.openexternalrequests.append(" ".join(dHandle.openrequests[0]))
+            del dHandle.openrequests[0]
             dHandle.output[5] = "none"
+    if len(dHandle.openexternalrequests) > 0 and dHandle.output[5] == "none":
+        log("There are open external requests", "handleData")
+        log(str(dHandle.openexternalrequests), "handleData")
+        removeItem = []
+        for request in dHandle.openexternalrequests:
+            path = "/var/www/html/input/"+request+".req"
+            file = Path(path)
+            if file.is_file():
+                with open(path, "r") as readRequest:
+                    if readRequest.readlines()[0] == "accepted":
+                        dHandle.invertState(request.split(" ")[1])
+                        dHandle.output[5] = request.split(" ")[1]+" accepted"
+                        removeItem.append(request)
+                        if request.split(" ")[1] == "Auto":
+                            autooff = th.Thread(target=auto_off)
+                            autooff.start()
+                    else:
+                        dHandle.output[5] = request.split(" ")[1]+" declined"
+                        removeItem.append(request)
+                command = "rm '"+path+"'"
+                os.system(command)
+        for item in removeItem:
+            dHandle.openexternalrequests.remove(item)
+                        
 
 def auto_off():
     time.sleep(10)
@@ -162,9 +196,7 @@ while not dHandle.getCloseServer():
     with open("/var/www/html/input/request.txt", "r") as file:
         for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/request.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
-            while dHandle.output[5] != "none":
-                pass
-            if line.strip() != "" and not dHandle.getCloseServer():
+            if dHandle.output[5] == "none" and line.strip != "" and not dHandle.getCloseServer():
                 dHandle.output[5] = line.strip().split(" ")[1]
                 dHandle.openrequests.append(line.strip().split(" "))
                 log("Request zu vorhandenen Requests hinzugefügt", "Main")
