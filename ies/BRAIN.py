@@ -36,9 +36,20 @@ class DataHandle():
     def __init__(self):
         self.input = [[0],[0],[0],[0]]
         self.inputRequest = ["","","",""]
+        self.openrequestsBat = []
+        self.openrequestsPow = []
         self.output = ["Back","Back","Back","Back"]
         self.storeEnergy = 0
+        self.giveEnergy = 0
+        self.givePowerGrid = [0, 0] # [0] steht für den Verriegelungsstatus, [1] steht für die Energie, die aus dem Netz genommen wird
         self.__closeServer = 0
+        self.verbraucher = {
+            "Lampe":1000,
+            "Auto":18000,
+            "Herd":7000,
+            "Fernseher":800,
+            "Waschmaschiene":3000
+            }
     
     def setCloseServer(self):
         self.__closeServer += 1
@@ -151,6 +162,8 @@ def network_handle():
                        "BRAIN_Produktion="+str(allProduktion)+"\nBRAIN_Verbrauch="+str(allVerbrauch)+"\nBRAIN_storedEnergy="+str(int(storedEnergy))+"\nBRAIN_Effizienz="+str(allEffizienz)+"\nBRAIN_MaximalmöglicheProduktion="+str(maxProduktion))
         
         #Management für das Empfangen von Energie
+        energyfromBattery = 0
+        energyfromGrid = 0
         for i in range(4):
             dHandle.output[i] = ""
             if i in need:
@@ -168,6 +181,19 @@ def network_handle():
                         break
                 if need[i] > 0:
                     log("Es gibt zu wenig Energie im System", handle.getName())
+                    if storedEnergy > 3600000: #Speicher mehr befüllt als 1 kWh
+                        energyfromBattery += need[i]
+                        dHandle.output[i] += "4 " + str(need[i]) + " "
+                        need[i] = 0
+                    if need[i] > 0:
+                        if dHandle.givePowerGrid[0] == 1:
+                            energyfromGrid += need[i]
+                            dHandle.output[i] += "5 " + str(need[i]) + " "
+                            need[i] = 0
+                        else:
+                            log("Kritischer Energiezustand - schalte alle Verbraucher aus", handle.getName())
+        dHandle.giveEnergy = energyfromBattery
+        dHandle.givePowerGrid[1] = energyfromGrid
                         
         #Management für das Geben von Energie
         for i in range(4):
@@ -181,7 +207,29 @@ def network_handle():
             if dHandle.output[i] == "":
                 dHandle.output[i] = "none"
             if dHandle.inputRequest[i] != "none":
-                dHandle.output[i] += "||request accepted"
+                if len(dHandle.inputRequest[i].split(" ")) > 1 and "off" not in dHandle.inputRequest[i]:
+                    #Batteryrequests
+                    if str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsBat and dHandle.inputRequest[i].split(" ")[1] == "accepted":
+                        dHandle.openrequestsBat.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                    elif str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsBat and dHandle.inputRequest[i].split(" ")[1] == "declined":
+                        dHandle.openrequestsBat.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                        
+                    #Power-Grid Requests
+                    if str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsPow and dHandle.inputRequest[i].split(" ")[1] == "accepted":
+                        dHandle.openrequestsPow.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                        dHandle.givePowerGrid[0] = 1
+                    elif str(i)+" "+dHandle.inputRequest[i].split(" ")[0] in dHandle.openrequestsPow and dHandle.inputRequest[i].split(" ")[1] == "declined":
+                        dHandle.openrequestsPow.remove(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                    
+                #Allgemeiene Steuerung
+                elif dHandle.verbraucher[dHandle.inputRequest[i].split(" ")[0]] < allProduktion-allVerbrauch or (len(dHandle.inputRequest[i].split(" ")) > 1 and "off" in dHandle.inputRequest[i]):
+                    dHandle.output[i] += "||request accepted"
+                elif storedEnergy > 3600000:
+                    dHandle.output[i] += "||request denied - Energy from battery?"
+                    dHandle.openrequestsBat.append(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
+                else:
+                    dHandle.output[i] += "||request denied - Energy from public power grid?"
+                    dHandle.openrequestsPow.append(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
                 
         dHandle.storeEnergy = sum([w for giver,w in give.items()])
         log(str(dHandle.storeEnergy), handle.getName())
@@ -235,7 +283,9 @@ def SSH(mode):
                 log("Altes Programm wurde entfernt", "Main")
             else:
                 log(error, "Main")
-            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output/*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/input/*.req")
+            stdin, stdout, stderr = ssh_client.exec_command("killall screen")
             sftp_client = ssh_client.open_sftp()
             sftp_client.put('/home/BRAIN/ies/Clients/'+USERNAME[i]+'.py','/home/'+USERNAME[i]+'/ies/'+USERNAME[i]+'.py')
             sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/var/www/html/input/request.txt')
@@ -297,7 +347,7 @@ while not dHandle.getCloseServer():
                 newReq = th.Thread(target=queue, args=[line.strip()])
                 newReq.start()
                 textCount += 1
-    storedEnergy += dHandle.storeEnergy*0.5*0.05
+    storedEnergy += (dHandle.storeEnergy*0.5-dHandle.giveEnergy)*0.05
     time.sleep(0.05)
 
 time.sleep(1)
