@@ -16,11 +16,9 @@ import os
 GPIO.setmode(GPIO.BCM)
 
 button1 = 4
-button2 = 17
 vorher = 0
 
 GPIO.setup(button1,GPIO.IN)
-GPIO.setup(button2,GPIO.IN)
 
 #########################################################################
 #Klassen des Programms
@@ -28,48 +26,42 @@ class SMD(th.Thread):
     def __init__(self):
         th.Thread.__init__(self)
         self.state = 0
-        self.smdR = 21
-        self.smdG = 20
-        self.smdB = 16
+        self.buttonLight = 20
         self.retry = 0
-        GPIO.setup(self.smdR,GPIO.OUT)
-        GPIO.setup(self.smdG,GPIO.OUT)
-        GPIO.setup(self.smdB,GPIO.OUT)
-    
-    def light(self, red, green, blue):
-        GPIO.output(self.smdR, red)
-        GPIO.output(self.smdG, green)
-        GPIO.output(self.smdB, blue)
+        GPIO.setup(self.buttonLight, GPIO.OUT)
     
     def run(self):  
         while True:
             if self.state == 2:
                 while True:
-                    self.light(1,0,0)
+                    GPIO.output(self.buttonLight, GPIO.HIGH)
                     time.sleep(0.2)
-                    self.light(0,0,0)
+                    GPIO.output(self.buttonLight, GPIO.LOW)
                     time.sleep(0.2)
             elif self.state == 3:
-                self.light(0,0,1)
+                GPIO.output(self.buttonLight, GPIO.HIGH)
+                time.sleep(0.5)
+                GPIO.output(self.buttonLight, GPIO.LOW)
+                time.sleep(0.2)
             elif testactive():
-                self.light(0,1,0)
+                GPIO.output(self.buttonLight, GPIO.HIGH)
                 with open("/var/www/html/output/data.txt", "r") as file:
                     text = file.readlines()
                     if len(text) > 0 and text[0] == "0":
-                        time.sleep(0.2)
-                        self.light(0,0,0)
-                        time.sleep(0.2)
+                        time.sleep(0.5)
+                        GPIO.output(self.buttonLight, GPIO.LOW)
+                        time.sleep(0.5)
                         self.state = 1
                         self.retry += 1
                         if self.retry > 20:
-                            os.system("screen -X -S execute kill")
+                            task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -XS execute kill'))
                             self.retry = 0
                             log("Programm wurde aufgrund von eines inaktiven Pis geschlossen")
                     elif self.state == 1:
                         self.state = 0
                         self.retry = 0
             else:
-                self.light(1,0,0)
+                GPIO.output(self.buttonLight, GPIO.LOW)
             
 #Funktionen des Programms
 def log(text):
@@ -96,29 +88,38 @@ lights.start()
 
 while True:
     if GPIO.input(button1) == GPIO.HIGH and vorher == 0:
-        time.sleep(0.7)
-        if GPIO.input(button1) == GPIO.HIGH:
+        state = 1
+        state_vorher = 0
+        click = 0
+        counter = 0
+        while counter != 100:
+            if state != state_vorher:
+                if state == 1:
+                    log("click")
+                    click += 1
+            time.sleep(0.01)
+            state_vorher = state
+            state = GPIO.input(button1)
+            counter += 1
+        if click == 3:
+            log("Starte die Pis neu")
+            os.system("/UTILITY_reboot.sh")
+            lights.state = 3
+        elif click == 2:
+            log("Schalte die Pis aus")
+            os.system("/UTILITY_shutdown.sh")
+            lights.state = 2
+        elif click == 1 and GPIO.input(button1) == GPIO.LOW:
             if testactive():
                 log("Schließe das Programm")
                 write("close")
             else:
                 log("Starte das Programm")
-                os.system("screen -dmS execute python3 /home/BRAIN/ies/BRAIN.py")
-        else:
+                os.system("/UTILITY_start.sh")
+        elif click == 1 and GPIO.input(button1) == GPIO.HIGH:
             log("Starte das Programm neu")
             write("restart")
         vorher = 1
-    elif GPIO.input(button2) == GPIO.HIGH and vorher == 0 and testactive():
-        time.sleep(0.7)
-        if GPIO.input(button2) == GPIO.HIGH:
-            log("Starte die Pis neu")
-            write("reboot")
-            lights.state = 3
-        else:
-            log("Schalte die Pis aus")
-            write("shutdown")
-            lights.state = 2
-        vorher = 1
-    elif GPIO.input(button1) == GPIO.LOW and GPIO.input(button2) == GPIO.LOW:
+    elif GPIO.input(button1) == GPIO.LOW:
         vorher = 0
     time.sleep(0.1)

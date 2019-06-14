@@ -10,6 +10,18 @@ from itertools import islice
 import paramiko
 import sys
 import os
+import RPi.GPIO as GPIO
+from neopixel import *
+
+sys.path.append("/home/PHOTOVOLTAIK/.local/lib/python3.5/site-packages")
+
+#GPIO-Pins
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup(14, GPIO.OUT)
+GPIO.setup(15, GPIO.OUT)
+GPIO.output(14, GPIO.LOW)
+GPIO.output(15, GPIO.HIGH)
 
 #Netzwerk
 HOST = '192.168.1.25'
@@ -17,7 +29,7 @@ CLIENTS = ['192.168.1.26', '192.168.1.27', '192.168.1.28', '192.168.1.29']
 USERNAME = ['PHOTOVOLTAIK', 'WINDKRAFT', 'GEOTHERMIE', 'BIOGAS']
 PASSWORD = ['clientTA52', 'clientRA54', 'clientRM56', 'clientOG58']
 PORT = 55555
-wait = 0.5
+wait = 1
 shutdown = ["sudo /sbin/shutdown -r now\n", "sudo /sbin/shutdown -h now\n"]
 
 #gibt an, wie viele der Requests in der Datei schon ausgeführt wurden 
@@ -40,8 +52,11 @@ class DataHandle():
         self.openrequestsPow = []
         self.output = ["Back","Back","Back","Back"]
         self.storeEnergy = 0
+        self.storedEnergy = 0
         self.giveEnergy = 0
         self.givePowerGrid = [0, 0] # [0] steht für den Verriegelungsstatus, [1] steht für die Energie, die aus dem Netz genommen wird
+        self.turnoff = 0
+        self.maxStoredEnergy = 2000 #in Wh
         self.__closeServer = 0
         self.verbraucher = {
             "Lampe":1000,
@@ -68,6 +83,327 @@ class GetWeather(th.Thread):
         while not self.stopped.wait(timeToWait):
             log("Erhalte Wetterdaten", weather.getName())
             timeToWait = 600
+            
+class Pumpe(th.Thread):
+    def __init__(self):
+        th.Thread.__init__(self)
+        self.potistate = 0
+        self.newPotistate = 0
+        self.rest = 0
+        self.activeStepper = 0
+        self.lock = 0
+        self.restvorher = 0
+        
+        self.control_pins = [6, 13, 19, 26]
+        for pin in self.control_pins:
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, 0)
+        self.halfstep_seq = [
+            [1,0,0,0],
+            [1,1,0,0],
+            [0,1,0,0],
+            [0,1,1,0],
+            [0,0,1,0],
+            [0,0,1,1],
+            [0,0,0,1],
+            [1,0,0,1],
+        ]
+        for i in range(90):
+            for halfstep in range(8):
+                for pin in range(4):
+                    GPIO.output(self.control_pins[pin],self.halfstep_seq[halfstep][pin])
+                time.sleep(0.002)
+        for pin in self.control_pins:
+            GPIO.output(pin, 0)
+    
+    def stepper(self):
+        self.activeStepper = 1
+        if (self.potistate-self.newPotistate) > 0:
+            #Poti muss zurückdrehen
+            self.control_pins = [26, 19, 13, 6]
+            log("Turning back"+str(self.newPotistate), "Pumpe")
+        else:
+            #Poti muss vordrehen
+            self.control_pins = [6, 13, 19, 26]
+            log("Poti dreht vorwärts zu "+str(self.newPotistate), "Pumpe")
+            
+        for i in range(int(168*((abs(self.potistate-self.newPotistate))/12))):
+            for halfstep in range(8):
+                for pin in range(4):
+                    GPIO.output(self.control_pins[pin],self.halfstep_seq[halfstep][pin])
+                time.sleep(0.002)
+        for pin in self.control_pins:
+            GPIO.output(pin, 0)
+        self.potistate = self.newPotistate
+        self.activeStepper = 0
+        
+    def run(self):
+        while not dHandle.getCloseServer():
+            #Pumpensteuerung
+            if dHandle.storedEnergy + (dHandle.storeEnergy*0.1) < int(dHandle.maxStoredEnergy)*3600: #Speicherkapazität in dHandle.maxStoredEnergy festgelegt
+                dHandle.storedEnergy += dHandle.storeEnergy*0.1
+            else:
+                dHandle.storedEnergy = int(dHandle.maxStoredEnergy)*3600
+            time.sleep(0.1)
+            if self.rest > 40000 and self.lock != 2:
+                if self.restvorher < self.rest:
+                    if self.activeStepper == 0:
+                        if dHandle.storeEnergy > 0:
+                            self.newPotistate = self.potistate+1
+                        else:
+                            self.newPotistate = self.potistate-1
+                        GPIO.output(14, GPIO.LOW)
+                        self.stepper()
+                        self.lock = 1
+                        log("Setting to Level"+str(self.newPotistate), "Pumpe")
+                        log("Pumpe neu "+str(self.newPotistate), "Pumpe")
+                        log("Pumpe "+str(self.potistate), "Pumpe")
+            elif self.rest < -40000 and self.lock != 1:
+                if self.restvorher > self.rest:
+                    if self.activeStepper == 0:
+                        if dHandle.storeEnergy > 0:
+                            self.newPotistate = self.potistate-1
+                        else:
+                            self.newPotistate = self.potistate+1
+                        GPIO.output(14, GPIO.LOW)
+                        self.stepper()
+                        self.lock = 2
+            if self.lock == 1:
+                self.restvorher = self.rest
+                if self.rest < 0:
+                    self.lock = 0
+            elif self.lock == 2:
+                self.restvorher = self.rest
+                if self.rest > 0:
+                    self.lock = 0
+            if dHandle.storeEnergy == 0:
+                GPIO.output(14, GPIO.LOW)
+                GPIO.output(15, GPIO.HIGH)
+            elif dHandle.storeEnergy > 0:
+                #Energiezufuhr
+                if dHandle.storeEnergy < 16334.597 and self.lock == 0:
+                    GPIO.output(14, GPIO.LOW)
+                    GPIO.output(15, GPIO.LOW)
+                    if self.potistate != 0:
+                        self.newPotistate = 0
+                        if self.activeStepper == 0:
+                            GPIO.output(14, GPIO.LOW)
+                            self.stepper()
+                    self.rest += dHandle.storeEnergy*0.1
+                else:
+                    GPIO.output(14, GPIO.HIGH)
+                    GPIO.output(15, GPIO.LOW)
+                    if (dHandle.storeEnergy >= 16334.597 and dHandle.storeEnergy < 19012.6 and self.lock == 0) or (self.potistate == 0 and self.lock > 0):
+                        log("Level 1", "Pumpe")
+                        log(str(dHandle.storeEnergy), "Pumpe")
+                        if self.potistate != 0:
+                            self.newPotistate = 0
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(16334.597*0.1)
+                    elif (dHandle.storeEnergy >= 19012.6 and dHandle.storeEnergy < 24395.9 and self.lock == 0) or (self.potistate == 1 and self.lock > 0):
+                        log("Level 2", "Pumpe")
+                        log(str(dHandle.storeEnergy), "Pumpe")
+                        if self.potistate != 1:
+                            self.newPotistate = 1
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(21690.675*0.1)
+                    elif (dHandle.storeEnergy >= 24395.9 and dHandle.storeEnergy < 29588.4 and self.lock == 0) or (self.potistate == 2 and self.lock > 0):
+                        log("Level 3", "Pumpe")
+                        if self.potistate != 2:
+                            self.newPotistate = 2
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(27101.206*0.1)
+                    elif (dHandle.storeEnergy >= 29588.4 and dHandle.storeEnergy < 34162.5 and self.lock == 0) or (self.potistate == 3 and self.lock > 0):
+                        if self.potistate != 3:
+                            self.newPotistate = 3
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(32075.526*0.1)
+                    elif (dHandle.storeEnergy >= 34162.5 and dHandle.storeEnergy < 38415.2 and self.lock == 0) or (self.potistate == 4 and self.lock > 0):
+                        if self.potistate != 4:
+                            self.newPotistate = 4
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(36249.453*0.1)
+                    elif (dHandle.storeEnergy >= 38415.2 and dHandle.storeEnergy < 42479.4 and self.lock == 0) or (self.potistate == 5 and self.lock > 0):
+                        if self.potistate != 5:
+                            self.newPotistate = 5
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(40580.852*0.1)
+                    elif (dHandle.storeEnergy >= 42479.4 and dHandle.storeEnergy < 46051.1 and self.lock == 0) or (self.potistate == 6 and self.lock > 0):
+                        if self.potistate != 6:
+                            self.newPotistate = 6
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(44377.941*0.1)
+                    elif (dHandle.storeEnergy >= 46051.1 and dHandle.storeEnergy < 49240.9 and self.lock == 0) or (self.potistate == 7 and self.lock > 0):
+                        if self.potistate != 7:
+                            self.newPotistate = 7
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(47724.32*0.1)
+                    elif (dHandle.storeEnergy >= 49240.9 and dHandle.storeEnergy < 51669.5 and self.lock == 0) or (self.potistate == 8 and self.lock > 0):
+                        if self.potistate != 8:
+                            self.newPotistate = 8
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(50757.413*0.1)
+                    elif (dHandle.storeEnergy >= 51669.5 and dHandle.storeEnergy < 53836.8 and self.lock == 0) or (self.potistate == 9 and self.lock > 0):
+                        if self.potistate != 9:
+                            self.newPotistate = 9
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(52581.675*0.1)
+                    elif (dHandle.storeEnergy >= 53836.8 and dHandle.storeEnergy < 56277.6 and self.lock == 0) or (self.potistate == 10 and self.lock > 0):
+                        if self.potistate != 10:
+                            self.newPotistate = 10
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(55091.886*0.1)
+                    elif (dHandle.storeEnergy >= 56277.6 and dHandle.storeEnergy < 58785.15 and self.lock == 0) or (self.potistate == 11 and self.lock > 0):
+                        if self.potistate != 11:
+                            self.newPotistate = 11
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(57463.303*0.1)
+                    elif (dHandle.storeEnergy >= 58785.15 and dHandle.storeEnergy < 60106.998 and self.lock == 0) or (self.potistate == 12 and self.lock > 0):
+                        if self.potistate != 12:
+                            self.newPotistate = 12
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)-(60106.998*0.1)
+            else:
+                #Energieabfuhr
+                if dHandle.storeEnergy > -17396.145 and self.lock == 0:
+                    GPIO.output(14, GPIO.LOW)
+                    GPIO.output(15, GPIO.HIGH)
+                    if self.potistate != 0:
+                        self.newPotistate = 0
+                        if self.activeStepper == 0:
+                            GPIO.output(14, GPIO.LOW)
+                            self.stepper()
+                    self.rest += dHandle.storeEnergy*0.1
+                else:
+                    GPIO.output(14, GPIO.HIGH)
+                    GPIO.output(15, GPIO.HIGH)
+                    if (dHandle.storeEnergy <= -17396.145 and dHandle.storeEnergy > -20063.1 and self.lock == 0) or (self.potistate == 0 and self.lock > 0):
+                        if self.potistate != 0:
+                            self.newPotistate = 0
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(17396.145*0.1)
+                    elif (dHandle.storeEnergy <= -20063.1 and dHandle.storeEnergy > -25504.73 and self.lock == 0) or (self.potistate == 1 and self.lock > 0):
+                        if self.potistate != 1:
+                            self.newPotistate = 1
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(22730.017*0.1)
+                    elif (dHandle.storeEnergy <= -25504.73 and dHandle.storeEnergy > -31164.47 and self.lock == 0) or (self.potistate == 2 and self.lock > 0):
+                        if self.potistate != 2:
+                            self.newPotistate = 2
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(28279.458*0.1)
+                    elif (dHandle.storeEnergy <= -31164.47 and dHandle.storeEnergy > -36700.1 and self.lock == 0) or (self.potistate == 3 and self.lock > 0):
+                        if self.potistate != 3:
+                            self.newPotistate = 3
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(34049.487*0.1)
+                    elif (dHandle.storeEnergy <= -36700.1 and dHandle.storeEnergy > -41816.8 and self.lock == 0) or (self.potistate == 4 and self.lock > 0):
+                        if self.potistate != 4:
+                            self.newPotistate = 4
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(39350.736*0.1)
+                    elif (dHandle.storeEnergy <= -41816.8 and dHandle.storeEnergy > -46459.1 and self.lock == 0) or (self.potistate == 5 and self.lock > 0):
+                        if self.potistate != 5:
+                            self.newPotistate = 5
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(44282.911*0.1)
+                    elif (dHandle.storeEnergy <= -46459.1 and dHandle.storeEnergy > -50969.6 and self.lock == 0) or (self.potistate == 6 and self.lock > 0):
+                        if self.potistate != 6:
+                            self.newPotistate = 6
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(48635.276*0.1)
+                    elif (dHandle.storeEnergy <= -50969.6 and dHandle.storeEnergy > -55308.5 and self.lock == 0) or (self.potistate == 7 and self.lock > 0):
+                        if self.potistate != 7:
+                            self.newPotistate = 7
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(53303.851*0.1)
+                    elif (dHandle.storeEnergy <= -55308.5 and dHandle.storeEnergy > -58210.3 and self.lock == 0) or (self.potistate == 8 and self.lock > 0):
+                        if self.potistate != 8:
+                            self.newPotistate = 8
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(57313.077*0.1)
+                    elif (dHandle.storeEnergy <= -58210.3 and dHandle.storeEnergy > -60317.28 and self.lock == 0) or (self.potistate == 9 and self.lock > 0):
+                        if self.potistate != 9:
+                            self.newPotistate = 9
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(59107.533*0.1)
+                    elif (dHandle.storeEnergy <= -60317.28 and dHandle.storeEnergy > -62684.21 and self.lock == 0) or (self.potistate == 10 and self.lock > 0):
+                        if self.potistate != 10:
+                            self.newPotistate = 10
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(61527.028*0.1)
+                    elif (dHandle.storeEnergy <= -62684.21 and dHandle.storeEnergy > -65870.7 and self.lock == 0) or (self.potistate == 11 and self.lock > 0):
+                        if self.potistate != 11:
+                            self.newPotistate = 11
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(63841.399*0.1)
+                    elif (dHandle.storeEnergy <= -65870.7 and dHandle.storeEnergy > -67900 and self.lock == 0) or (self.potistate == 12 and self.lock > 0):
+                        if self.potistate != 12:
+                            self.newPotistate = 12
+                            if self.activeStepper == 0:
+                                GPIO.output(14, GPIO.LOW)
+                                self.stepper()
+                        self.rest += (dHandle.storeEnergy*0.1)+(67900*0.1)
+        while self.activeStepper == 1:
+            pass
+        self.control_pins = [26, 19, 13, 6]
+        for i in range(int(90+168*((abs(self.potistate))/12))):
+            for halfstep in range(8):
+                for pin in range(4):
+                    GPIO.output(self.control_pins[pin],self.halfstep_seq[halfstep][pin])
+                time.sleep(0.002)
+        for pin in self.control_pins:
+            GPIO.output(pin, 0)
 
 #Funktionen des Programms
 def log(text, bez):
@@ -123,7 +459,7 @@ def new_client(conn, addr, name):
         with open("/var/www/html/input/queue.txt", "w") as filedelete:
             filedelete.write("")
         with open("/var/www/html/output/savedEnergy.txt", "w") as saveNewEnergy:
-            saveNewEnergy.write(str(storedEnergy))
+            saveNewEnergy.write(str(dHandle.storedEnergy))
         stopWeather.set()
         dHandle.setCloseServer()
         while dHandle.getCloseServer() != 2:
@@ -139,7 +475,7 @@ def network_handle():
         log("Rohinput: "+str(dHandle.input), handle.getName())
         allProduktion = dHandle.input[0][1]+dHandle.input[1][1]+dHandle.input[2][1]+dHandle.input[3][1]
         allVerbrauch = dHandle.input[0][2]+dHandle.input[1][2]+dHandle.input[2][2]+dHandle.input[3][2]
-        allEffizienz = (dHandle.input[0][0]+dHandle.input[1][0]+dHandle.input[2][0]+dHandle.input[3][0])/4
+        allEffizienz = int((dHandle.input[0][0]+dHandle.input[1][0]+dHandle.input[2][0]+dHandle.input[3][0])/4)
         maxProduktion = dHandle.input[0][4]+dHandle.input[1][4]+dHandle.input[2][4]+dHandle.input[3][4]
         
         need = {}
@@ -159,7 +495,7 @@ def network_handle():
                        "Windkraft_Effizienz="+str(dHandle.input[1][0])+"\nWindkraft_Produktion="+str(dHandle.input[1][1])+"\nWindkraft_Verbrauch="+str(dHandle.input[1][2])+"\nWindkraft_BesteProduktion="+str(dHandle.input[1][3])+"\nWindkraft_MaximalmöglicheProduktion="+str(dHandle.input[1][4])+"\n"+
                        "Geothermie_Effizienz="+str(dHandle.input[2][0])+"\nGeothermie_Produktion="+str(dHandle.input[2][1])+"\nGeothermie_Verbrauch="+str(dHandle.input[2][2])+"\nGeothermie_BesteProduktion="+str(dHandle.input[2][3])+"\nGeothermie_MaximalmöglicheProduktion="+str(dHandle.input[2][4])+"\n"+
                        "Biogas_Effizienz="+str(dHandle.input[3][0])+"\nBiogas_Produktion="+str(dHandle.input[3][1])+"\nBiogas_Verbrauch="+str(dHandle.input[3][2])+"\nBiogas_BesteProduktion="+str(dHandle.input[3][3])+"\nBiogas_MaximalmöglicheProduktion="+str(dHandle.input[3][4])+"\n"+
-                       "BRAIN_Produktion="+str(allProduktion)+"\nBRAIN_Verbrauch="+str(allVerbrauch)+"\nBRAIN_storedEnergy="+str(int(storedEnergy))+"\nBRAIN_Effizienz="+str(allEffizienz)+"\nBRAIN_MaximalmöglicheProduktion="+str(maxProduktion))
+                       "BRAIN_Produktion="+str(allProduktion)+"\nBRAIN_Verbrauch="+str(allVerbrauch)+"\nBRAIN_storedEnergy="+str(int(dHandle.storedEnergy))+"\nBRAIN_Effizienz="+str(allEffizienz)+"\nBRAIN_MaximalmöglicheProduktion="+str(maxProduktion)+"\nBRAIN_maxStoredEnergy="+str(dHandle.maxStoredEnergy)+"\nPumpe_Restenergy="+str(pumpe.rest)+"\nPumpe_Status="+str(pumpe.potistate))
         
         #Management für das Empfangen von Energie
         energyfromBattery = 0
@@ -181,7 +517,7 @@ def network_handle():
                         break
                 if need[i] > 0:
                     log("Es gibt zu wenig Energie im System", handle.getName())
-                    if storedEnergy > 3600000: #Speicher mehr befüllt als 1 kWh
+                    if dHandle.storedEnergy > (allProduktion-allVerbrauch): #Speicher größer als Abgabe
                         energyfromBattery += need[i]
                         dHandle.output[i] += "4 " + str(need[i]) + " "
                         need[i] = 0
@@ -191,7 +527,9 @@ def network_handle():
                             dHandle.output[i] += "5 " + str(need[i]) + " "
                             need[i] = 0
                         else:
+                            dHandle.turnoff = 1
                             log("Kritischer Energiezustand - schalte alle Verbraucher aus", handle.getName())
+        
         dHandle.giveEnergy = energyfromBattery
         dHandle.givePowerGrid[1] = energyfromGrid
                         
@@ -224,15 +562,22 @@ def network_handle():
                 #Allgemeiene Steuerung
                 elif dHandle.verbraucher[dHandle.inputRequest[i].split(" ")[0]] < allProduktion-allVerbrauch or (len(dHandle.inputRequest[i].split(" ")) > 1 and "off" in dHandle.inputRequest[i]):
                     dHandle.output[i] += "||request accepted"
-                elif storedEnergy > 3600000:
+                elif dHandle.storedEnergy > 112.500:
                     dHandle.output[i] += "||request denied - Energy from battery?"
                     dHandle.openrequestsBat.append(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
                 else:
                     dHandle.output[i] += "||request denied - Energy from public power grid?"
                     dHandle.openrequestsPow.append(str(i)+" "+dHandle.inputRequest[i].split(" ")[0])
-                
-        dHandle.storeEnergy = sum([w for giver,w in give.items()])
+        if dHandle.storedEnergy != int(dHandle.maxStoredEnergy)*3600 or dHandle.giveEnergy > 0:
+            dHandle.storeEnergy = sum([w for giver,w in give.items()])*0.5-dHandle.giveEnergy
+        else:
+            dHandle.storeEnergy = 0
         log(str(dHandle.storeEnergy), handle.getName())
+        
+        if dHandle.turnoff == 1:
+            for i in range(4):
+                dHandle.output[i] = "turnoff"
+            dHandle.turnoff = 0
         
         if dHandle.getCloseServer():
             print("Close accepted", handle.getName())
@@ -253,7 +598,7 @@ def queue(command):
         with open("/var/www/html/input/queue.txt", "w") as filedelete:
             filedelete.write("")
         with open("/var/www/html/output/savedEnergy.txt", "w") as saveNewEnergy:
-            saveNewEnergy.write(str(storedEnergy))
+            saveNewEnergy.write(str(dHandle.storedEnergy))
         stopWeather.set()
         if command == "restart" or command == "clean restart":
             if command == "clean restart":
@@ -262,13 +607,17 @@ def queue(command):
                     resetEnergy.write("0")
             else:
                 log("Befehl zum Neustarten des Programms", "Main")
-            os.system("screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py restart")
+            #os.system("screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py restart")
+            task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py restart'))
         if command == "reboot":
             SSH(1)
-            os.system("screen -dmS reboot python3 /home/BRAIN/ies/BRAIN_RESTART.py reboot")
+            #os.system("screen -dmS reboot python3 /home/BRAIN/ies/BRAIN_RESTART.py reboot")
+            task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py reboot'))
         if command == "shutdown":
             SSH(2)
-            os.system("screen -dmS shutdown python3 /home/BRAIN/ies/BRAIN_RESTART.py shutdown")
+            #os.system("screen -dmS shutdown python3 /home/BRAIN/ies/BRAIN_RESTART.py shutdown")
+            task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS restart python3 /home/BRAIN/ies/BRAIN_RESTART.py shutdown'))
+        time.sleep(2)
         
 def SSH(mode):
     ssh_client = paramiko.SSHClient()
@@ -285,19 +634,24 @@ def SSH(mode):
                 log(error, "Main")
             stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/output/*.req")
             stdin, stdout, stderr = ssh_client.exec_command("rm /var/www/html/input/*.req")
-            stdin, stdout, stderr = ssh_client.exec_command("killall screen")
             sftp_client = ssh_client.open_sftp()
             sftp_client.put('/home/BRAIN/ies/Clients/'+USERNAME[i]+'.py','/home/'+USERNAME[i]+'/ies/'+USERNAME[i]+'.py')
             sftp_client.put('/home/BRAIN/ies/Clients/'+'request.txt','/var/www/html/input/request.txt')
             sftp_client.close()
             log("Neues Programm wurde übertragen", "Main")
             if not "noNetwork" in sys.argv and not "noExecute" in sys.argv:
-                stdin, stdout, stderr = ssh_client.exec_command("screen -dmS execute python3 /home/"+USERNAME[i]+"/ies/"+USERNAME[i]+".py")
-                error = stderr.read().decode("utf-8")
-                if error == "":
-                    log("Programm wird ausgeführt", "Main")
-                else:
-                    log(error, "Main")
+                channel = ssh_client.invoke_shell()
+                channel.send("sudo su\n")
+                time.sleep(0.6)
+                channel.send(PASSWORD[i]+"\n")
+                time.sleep(0.4)
+                #channel.send("export LD_PRELOAD='/usr/lib/libtcmalloc_minimal.so.4.3.0'\n")
+                #time.sleep(0.3)
+                channel.send("killall screen\n")
+                time.sleep(0.2)
+                channel.send("screen -dmS execute python3 /home/"+USERNAME[i]+"/ies/"+USERNAME[i]+".py\n")
+                time.sleep(0.2)
+                channel.close()
         if mode == 1 or mode == 2:
             channel = ssh_client.invoke_shell()
             channel.send(shutdown[mode-1])
@@ -314,6 +668,8 @@ log("Brain aktiv", "Main")
 
 #Definiere dHandle als Variable des Typs DataHandle()
 dHandle = DataHandle()
+pumpe = Pumpe()
+pumpe.start()
 
 if not "noNetwork" in sys.argv:
     #starte Server als Thread
@@ -330,14 +686,16 @@ if not "noWeather" in sys.argv:
     weather = GetWeather(stopWeather)
     weather.start()
 
+with open("/var/www/html/output/savedEnergy.txt", "r") as getStoredEnergy:
+    #Energie ist in Joule gespeichert
+    dHandle.storedEnergy = float(getStoredEnergy.readlines()[0])
+
 #Übertrage Updates auf Clients:
 if not "noSSH" in sys.argv:
     SSH(0)
+    
 
 #Main
-with open("/var/www/html/output/savedEnergy.txt", "r") as getStoredEnergy:
-    #Energie ist in Joule gespeichert
-    storedEnergy = float(getStoredEnergy.readlines()[0])
 while not dHandle.getCloseServer():
     #Überprüfe, ob sich etwas etwas neues in der Request Datei hinzugekommen ist, um es in die Warteschlange hinzuzufügen
     with open("/var/www/html/input/queue.txt", "r") as file:
@@ -347,10 +705,10 @@ while not dHandle.getCloseServer():
                 newReq = th.Thread(target=queue, args=[line.strip()])
                 newReq.start()
                 textCount += 1
-    storedEnergy += (dHandle.storeEnergy*0.5-dHandle.giveEnergy)*0.05
-    time.sleep(0.05)
 
 time.sleep(1)
+GPIO.output(14, GPIO.LOW)
+GPIO.output(15, GPIO.HIGH)
 log("Aktive Threads: "+str(th.active_count()), "Main")
 log("Bezeichnung der Threads: "+str(th.enumerate()), "Main")
 log("Beendet", "Main")

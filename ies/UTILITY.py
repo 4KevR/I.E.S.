@@ -44,7 +44,14 @@ def SSH(mode):
             time.sleep(0.7)
             channel.close()
         if mode == 3:
-            stdin, stdout, stderr = ssh_client.exec_command("killall screen")
+            channel = ssh_client.invoke_shell()
+            channel.send("sudo su\n")
+            time.sleep(0.7)
+            channel.send(PASSWORD[i]+"\n")
+            time.sleep(0.7)
+            channel.send("killall screen\n")
+            time.sleep(0.7)
+            channel.close()
         ssh_client.close()
         print("SSH-Verbindung geschlossen")
         
@@ -59,6 +66,10 @@ elif sys.argv[1] == "shutdown":
     os.system("screen -dmS shutdown python3 /home/BRAIN/ies/BRAIN_RESTART.py shutdown")
 elif sys.argv[1] == "kill":
     SSH(3)
-    os.system("killall screen")
+    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'killall screen'))
+    time.sleep(0.7)
+    os.system("screen -dmS button python3 /home/BRAIN/ies/BUTTON.py")
+elif sys.argv[1] == "start":
+    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS execute python3 /home/BRAIN/ies/BRAIN.py'))
     
 print("UTILITY completed")

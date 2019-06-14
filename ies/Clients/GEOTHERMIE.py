@@ -10,6 +10,9 @@ import RPi.GPIO as GPIO
 from itertools import islice
 from pathlib import Path
 import os
+from neopixel import *
+
+sys.path.append("/home/GEOTHERMIE/.local/lib/python3.5/site-packages")
 
 #Analog-Digital Wandler
 import board
@@ -22,14 +25,15 @@ i2c = busio.I2C(board.SCL, board.SDA)
 temp = ads.ADS1115(i2c)
 temp.gain = 4
 chantemp = [AnalogIn(temp, ads.P0), AnalogIn(temp, ads.P1), AnalogIn(temp, ads.P2), AnalogIn(temp, ads.P3)]
-normFaktor = (sum([int(chantemp[i].value) for i in range(0,4)])/4)-30
+maxProducedEnergy = 0
 
 #GPIO-Pins
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 GPIO.setup(26, GPIO.OUT)
 GPIO.setup(20, GPIO.OUT)
 GPIO.output(26, GPIO.LOW)
-GPIO.output(20, GPIO.LOW)
+GPIO.output(20, GPIO.HIGH)
 
 #Netzwerk
 HOST = '192.168.1.25'
@@ -49,15 +53,15 @@ with open("/home/GEOTHERMIE/ies/log.txt", "w") as filelog:
 #Klassen des Programms
 class DataHandle():
     def __init__(self):
-        self.output = ["0","0","0","0","13600","none"]
+        self.output = ["0","0","0","0","0","none"]
         self.input = ""
-        self.energystate = []
+        self.energystate = 0
         self.openrequests = []
         self.openexternalrequests = []
         self.__closeServer = 0
         self.__verbraucher = {
             "Lampe":[1000,26,0],
-            "Fernseher":[800,20,0]
+            "Fernseher":[800,20,1]
             }
         
     def setCloseServer(self):
@@ -67,7 +71,7 @@ class DataHandle():
         return self.__closeServer
     
     def getVerbrauch(self):
-        ret = sum([entry[0] for key, entry in self.__verbraucher.items() if entry[2] == 1])
+        ret = sum([entry[0] for key, entry in self.__verbraucher.items() if (entry[2] == 1 and key != "Fernseher") or (entry[2] == 0 and key == "Fernseher")])
         return str(ret) 
     
     def getPin(self, device):
@@ -79,6 +83,112 @@ class DataHandle():
     def invertState(self, device):
         self.__verbraucher[device][2] = (self.__verbraucher[device][2]+1)%2
         GPIO.output(self.__verbraucher[device][1], self.__verbraucher[device][2])
+        
+class LED(th.Thread):
+    def __init__(self):
+        th.Thread.__init__(self)
+        # LED strip configuration:
+        self.LED_COUNT      = 134     # Number of LED pixels.
+        self.LED_PIN        = 18      # GPIO pin connected to the pixels (18 uses PWM!).
+        #self.LED_PIN       = 10      # GPIO pin connected to the pixels (10 uses SPI /dev/spidev0.0).
+        self.LED_FREQ_HZ    = 800000  # LED signal frequency in hertz (usually 800khz)
+        self.LED_DMA        = 10      # DMA channel to use for generating signal (try 10)
+        self.LED_BRIGHTNESS = 255     # Set to 0 for darkest and 255 for brightest
+        self.LED_INVERT     = False   # True to invert the signal (when using NPN transistor level shift)
+        self.LED_CHANNEL    = 0       # set to '1' for GPIOs 13, 19, 41, 45 or 53
+        
+        self.strip = Adafruit_NeoPixel(self.LED_COUNT, self.LED_PIN, self.LED_FREQ_HZ, self.LED_DMA, self.LED_INVERT, self.LED_BRIGHTNESS, self.LED_CHANNEL)
+        self.strip.begin()
+        
+    def run(self):
+        log("starting led", "LED")
+        state_alloff = 1
+        farben = [Color(109, 239, 0), Color(0, 0, 255), Color(0, 255, 0), Color(255, 0, 0), Color(255, 255, 255)]
+        colours = [Color(0,0,0), Color(0,0,0,), Color(0,0,0), Color(0,0,0)]
+        while not dHandle.getCloseServer():
+            try:
+                copyOfState = dHandle.energystate.copy()
+            except AttributeError:
+                copyOfState = ""
+            if "{" in str(copyOfState):
+                #Dictionary gibt an, dass Energie bekommen wird
+                completeVerbrauch = 0
+                durchlauf = 0
+                maxinlist = [0, 0]
+                for key,value in copyOfState.items():
+                    completeVerbrauch += value
+                    if durchlauf == 0:
+                        for i in range(4):
+                            colours[i] = farben[key]
+                    else:
+                        colours[-durchlauf] = farben[key]
+                        if value > maxinlist[1]:
+                            maxinlist = [key, value]
+                        if durchlauf == 1:
+                            colours[-durchlauf-1] = farben[key]
+                    durchlauf += 1
+                    
+                if durchlauf == 3:
+                    colours[1] = farben[maxinlist[0]]
+                    
+                for z in range(8, 0, -1):
+                    for i in range(0, self.strip.numPixels(), 8):
+                        self.strip.setPixelColor(i+z, colours[0])
+                        self.strip.setPixelColor(i+z+1, colours[1])
+                        self.strip.setPixelColor(i+z+2, colours[2])
+                        self.strip.setPixelColor(i+z+3, colours[3])
+                    self.strip.show()
+                    if int(completeVerbrauch) != 0:
+                        time.sleep((userData.maxLED+userData.minLED)-(userData.maxLED+userData.minLED*((float(completeVerbrauch)/22000)**0.75)))
+                        #log(str((maxLED+minLED)-(minLED*((float(data[1])/float(maxWert))**0.75))), "runLED")
+                    else:
+                        break
+                    for i in range(0, self.strip.numPixels(), 2):
+                        self.strip.setPixelColor(i+z, 0)
+                        self.strip.setPixelColor(i+z+1, 0)
+                        self.strip.setPixelColor(i+z+2, 0)
+                        self.strip.setPixelColor(i+z+3, 0)
+                state_alloff = 1
+            elif int(dHandle.output[1]) > userData.beginShowEnergy:
+                #sonst ist der Wert ein Integer und das bedeutet, dass Energie abgegeben wird
+                for q in range(8):
+                    for i in range(0, self.strip.numPixels(), 8):
+                        self.strip.setPixelColor(i+q, Color(0, 255, 0))
+                        self.strip.setPixelColor(i+q+1, Color(0, 255, 0))
+                        self.strip.setPixelColor(i+q+2, Color(0, 255, 0))
+                        self.strip.setPixelColor(i+q+3, Color(0, 255, 0))
+                    self.strip.show()
+                    if int(dHandle.output[1]) != 0:
+                        time.sleep((userData.maxLED+userData.minLED)-(userData.minLED*((float(dHandle.output[1])/float(dHandle.output[4]))**0.75)))
+                        #log(str((userData.maxLED+userData.minLED)-(userData.minLED*((float(dHandle.output[1])/float(dHandle.output[4]))**0.75))), "runLED")
+                    else:
+                        break
+                    for i in range(0, self.strip.numPixels(), 2):
+                        self.strip.setPixelColor(i+q, 0)
+                        self.strip.setPixelColor(i+q+1, 0)
+                        self.strip.setPixelColor(i+q+2, 0)
+                        self.strip.setPixelColor(i+q+3, 0)
+                    state_alloff = 1
+            elif state_alloff == 1:
+                for i in range(0, self.strip.numPixels()):
+                    self.strip.setPixelColor(i, 0)
+                self.strip.show()
+                state_alloff = 0
+        for i in range(0, self.strip.numPixels()):
+            self.strip.setPixelColor(i, 0)
+        self.strip.show()
+                
+class UserData():
+    def __init__(self):
+        #Normalisierungen aus Datei einlesen
+        with open("/home/GEOTHERMIE/ies/input.txt", "r") as getInput:
+            data = getInput.readlines()
+            dHandle.output[4] = data[3].strip()
+            self.maxWert = int(data[6].strip())
+            self.beginShowEnergy = int(data[9].strip())
+            self.maxLED = float(data[13].strip())
+            self.minLED = float(data[16].strip())
+            self.normFaktor = (sum([int(chantemp[i].value) for i in range(0,4)])/4)-30
 
 #Funktionen des Programms
 def log(text, bez):
@@ -113,11 +223,19 @@ def connect_server():
         
 def handleData():
     dHandle.input = dHandle.input.split("||")
-    if dHandle.input[0].strip() != "none":
+    if dHandle.input[0].strip() == "turnoff":
+        if dHandle.getState("Fernseher") == 0:
+            dHandle.invertState("Fernseher")
+        if dHandle.getState("Lampe") == 1:
+            dHandle.invertState("Lampe")
+    elif dHandle.input[0].strip() != "none":
         if len(dHandle.input[0].split("  ")[0].split(" ")) > 1:
             dHandle.energystate = {int(partvalue.split(" ")[0]):int(partvalue.split(" ")[1]) for partvalue in dHandle.input[0].split("  ") if partvalue != "" and partvalue != "0"}
         else:
-            dHandle.energystate = int(dHandle.input[0].strip())
+            try:
+                dHandle.energystate = int(dHandle.input[0].strip())
+            except ValueError:
+                sys.exit()
     else:
         dHandle.energystate = 0
     log(str(dHandle.energystate), "handleData")
@@ -131,7 +249,7 @@ def handleData():
                 log("success", "handleData")
             elif reply == "request denied - Energy from battery?":
                 with open("/var/www/html/output/"+dHandle.openrequests[0][0]+".req", "w") as requestWrite:
-                    requestWrite.write("request denied - Energy from battery?")
+                    requestWrite.write("requestdeniedenergyproblemusebattery")
                 if " ".join(dHandle.openrequests[0]) not in dHandle.openexternalrequests:
                     dHandle.openexternalrequests.append(" ".join(dHandle.openrequests[0]))
             elif reply == "request denied - Energy from public power grid?":
@@ -169,10 +287,16 @@ log("Haus Geothermie aktiv", "Main")
 #initiiere Klasse
 dHandle = DataHandle()
 
+#Nutzerdaten
+userData = UserData()
+
 #starte Verbindung zum Server als Thread
 if not "noNetwork" in sys.argv:
     t = th.Thread(target=connect_server)
     t.start()
+    
+led = LED()
+led.start()
 
 
 #Main
@@ -182,20 +306,23 @@ while not dHandle.getCloseServer():
         for line in islice(file, textCount, sum(1 for line in open("/var/www/html/input/request.txt"))):
             log("Erhaltene Request: "+line.strip(), "Main")
             if dHandle.output[5] == "none" and line.strip() != "" and not dHandle.getCloseServer():
-                if dHandle.getState(line.strip().split(" ")[1]) == 0:
-                    dHandle.output[5] = line.strip().split(" ")[1]
-                else:
-                    dHandle.output[5] = line.strip().split(" ")[1]+" off"
-                dHandle.openrequests.append(line.strip().split(" "))
-                log("Request zu vorhandenen Requests hinzugefügt", "Main")
-                textCount += 1
+                try:
+                    if (dHandle.getState(line.strip().split(" ")[1]) == 0 and line.strip().split(" ")[1] == "Lampe") or (dHandle.getState(line.strip().split(" ")[1]) == 1 and line.strip().split(" ")[1] == "Fernseher"):
+                        dHandle.output[5] = line.strip().split(" ")[1]
+                    else:
+                        dHandle.output[5] = line.strip().split(" ")[1]+" off"
+                    dHandle.openrequests.append(line.strip().split(" "))
+                    log("Request zu vorhandenen Requests hinzugefügt", "Main")
+                except IndexError:
+                    pass
+            textCount += 1
                 
     #Sensordaten hinzufügen
     #Temperatur ermitteln:
     log("Value: "+str([int(chantemp[i].value) for i in range(0,4)]), "Main")
     log("Voltage: "+str([chantemp[i].voltage for i in range(0,4)]), "Main")
     
-    averageTemp = int(sum([int(chantemp[i].value) for i in range(0,4)])/4-normFaktor)*5
+    averageTemp = int(int(dHandle.output[4])*((sum([int(chantemp[i].value) for i in range(0,4)])/4-userData.normFaktor)/(userData.maxWert-userData.normFaktor)))
     if averageTemp < 0:
         averageTemp = 0
     
@@ -204,6 +331,10 @@ while not dHandle.getCloseServer():
     else:
         dHandle.output[1] = str(averageTemp)
     dHandle.output[2] = dHandle.getVerbrauch()
+    if int(dHandle.output[1]) > maxProducedEnergy:
+        maxProducedEnergy = int(dHandle.output[1])
+        dHandle.output[3] = str(maxProducedEnergy)
+    dHandle.output[0] = str(int(((0.15*int(dHandle.output[4]))+(0.85*int(dHandle.output[3])))/200*((((int(dHandle.output[1])-int(dHandle.output[2]))**2)/100)**0.5)*((int(dHandle.output[1])-int(dHandle.output[2]))/12577280)))
     
     Barriere.wait()
 
