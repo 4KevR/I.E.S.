@@ -29,7 +29,7 @@ CLIENTS = ['192.168.1.26', '192.168.1.27', '192.168.1.28', '192.168.1.29']
 USERNAME = ['PHOTOVOLTAIK', 'WINDKRAFT', 'GEOTHERMIE', 'BIOGAS']
 PASSWORD = ['clientTA52', 'clientRA54', 'clientRM56', 'clientOG58']
 PORT = 55555
-wait = 1
+wait = 0.05
 shutdown = ["sudo /sbin/shutdown -r now\n", "sudo /sbin/shutdown -h now\n"]
 
 #gibt an, wie viele der Requests in der Datei schon ausgeführt wurden 
@@ -57,13 +57,14 @@ class DataHandle():
         self.givePowerGrid = [0, 0] # [0] steht für den Verriegelungsstatus, [1] steht für die Energie, die aus dem Netz genommen wird
         self.turnoff = 0
         self.maxStoredEnergy = 2000 #in Wh
+        self.ssh = 1
         self.__closeServer = 0
         self.verbraucher = {
             "Lampe":1000,
             "Auto":18000,
             "Herd":7000,
             "Fernseher":800,
-            "Waschmaschiene":3000
+            "Waschmaschine":3000
             }
     
     def setCloseServer(self):
@@ -93,6 +94,9 @@ class Pumpe(th.Thread):
         self.activeStepper = 0
         self.lock = 0
         self.restvorher = 0
+        self.startPoint = 0
+        self.startPointVorher = 0
+        time.sleep(1)
         
         self.control_pins = [6, 13, 19, 26]
         for pin in self.control_pins:
@@ -146,28 +150,44 @@ class Pumpe(th.Thread):
                 dHandle.storedEnergy = int(dHandle.maxStoredEnergy)*3600
             time.sleep(0.1)
             if self.rest > 40000 and self.lock != 2:
+                if dHandle.storeEnergy > 0:
+                    self.startPoint = 0
+                elif dHandle.storeEnergy < 0:
+                    self.startPoint = 1
+                if self.lock == 0:
+                    self.startPointVorher = self.startPoint
                 if self.restvorher < self.rest:
-                    if self.activeStepper == 0:
-                        if dHandle.storeEnergy > 0:
-                            self.newPotistate = self.potistate+1
-                        else:
-                            self.newPotistate = self.potistate-1
-                        GPIO.output(14, GPIO.LOW)
-                        self.stepper()
+                    if self.startPointVorher != self.startPoint:
+                        self.lock = 0
+                    elif self.activeStepper == 0:
                         self.lock = 1
-                        log("Setting to Level"+str(self.newPotistate), "Pumpe")
-                        log("Pumpe neu "+str(self.newPotistate), "Pumpe")
-                        log("Pumpe "+str(self.potistate), "Pumpe")
+                        if self.startPoint == 0:
+                            self.newPotistate = self.potistate+1
+                        else:
+                            self.newPotistate = self.potistate-1
+                        GPIO.output(14, GPIO.LOW)
+                        self.stepper()
+                        #log("Setting to Level"+str(self.newPotistate), "Pumpe")
+                        #log("Pumpe neu "+str(self.newPotistate), "Pumpe")
+                        #log("Pumpe "+str(self.potistate), "Pumpe")
             elif self.rest < -40000 and self.lock != 1:
+                if dHandle.storeEnergy > 0:
+                    self.startPoint = 0
+                elif dHandle.storeEnergy < 0:
+                    self.startPoint = 1
+                if self.lock == 0:
+                    self.startPointVorher = self.startPoint
                 if self.restvorher > self.rest:
-                    if self.activeStepper == 0:
-                        if dHandle.storeEnergy > 0:
+                    if self.startPointVorher != self.startPoint:
+                        self.lock = 0
+                    elif self.activeStepper == 0:
+                        self.lock = 2
+                        if self.startPoint == 0:
                             self.newPotistate = self.potistate-1
                         else:
                             self.newPotistate = self.potistate+1
                         GPIO.output(14, GPIO.LOW)
                         self.stepper()
-                        self.lock = 2
             if self.lock == 1:
                 self.restvorher = self.rest
                 if self.rest < 0:
@@ -179,11 +199,13 @@ class Pumpe(th.Thread):
             if dHandle.storeEnergy == 0:
                 GPIO.output(14, GPIO.LOW)
                 GPIO.output(15, GPIO.HIGH)
+                LED.setActive = 0
             elif dHandle.storeEnergy > 0:
                 #Energiezufuhr
                 if dHandle.storeEnergy < 16334.597 and self.lock == 0:
                     GPIO.output(14, GPIO.LOW)
                     GPIO.output(15, GPIO.LOW)
+                    LED.setActive = 0
                     if self.potistate != 0:
                         self.newPotistate = 0
                         if self.activeStepper == 0:
@@ -193,9 +215,10 @@ class Pumpe(th.Thread):
                 else:
                     GPIO.output(14, GPIO.HIGH)
                     GPIO.output(15, GPIO.LOW)
+                    LED.setActive = 1
                     if (dHandle.storeEnergy >= 16334.597 and dHandle.storeEnergy < 19012.6 and self.lock == 0) or (self.potistate == 0 and self.lock > 0):
-                        log("Level 1", "Pumpe")
-                        log(str(dHandle.storeEnergy), "Pumpe")
+                        #log("Level 1", "Pumpe")
+                        #log(str(dHandle.storeEnergy), "Pumpe")
                         if self.potistate != 0:
                             self.newPotistate = 0
                             if self.activeStepper == 0:
@@ -203,8 +226,8 @@ class Pumpe(th.Thread):
                                 self.stepper()
                         self.rest += (dHandle.storeEnergy*0.1)-(16334.597*0.1)
                     elif (dHandle.storeEnergy >= 19012.6 and dHandle.storeEnergy < 24395.9 and self.lock == 0) or (self.potistate == 1 and self.lock > 0):
-                        log("Level 2", "Pumpe")
-                        log(str(dHandle.storeEnergy), "Pumpe")
+                        #log("Level 2", "Pumpe")
+                        #log(str(dHandle.storeEnergy), "Pumpe")
                         if self.potistate != 1:
                             self.newPotistate = 1
                             if self.activeStepper == 0:
@@ -212,7 +235,7 @@ class Pumpe(th.Thread):
                                 self.stepper()
                         self.rest += (dHandle.storeEnergy*0.1)-(21690.675*0.1)
                     elif (dHandle.storeEnergy >= 24395.9 and dHandle.storeEnergy < 29588.4 and self.lock == 0) or (self.potistate == 2 and self.lock > 0):
-                        log("Level 3", "Pumpe")
+                        #log("Level 3", "Pumpe")
                         if self.potistate != 2:
                             self.newPotistate = 2
                             if self.activeStepper == 0:
@@ -294,6 +317,7 @@ class Pumpe(th.Thread):
                 if dHandle.storeEnergy > -17396.145 and self.lock == 0:
                     GPIO.output(14, GPIO.LOW)
                     GPIO.output(15, GPIO.HIGH)
+                    LED.setActive = 0
                     if self.potistate != 0:
                         self.newPotistate = 0
                         if self.activeStepper == 0:
@@ -303,6 +327,7 @@ class Pumpe(th.Thread):
                 else:
                     GPIO.output(14, GPIO.HIGH)
                     GPIO.output(15, GPIO.HIGH)
+                    LED.setActive = 1
                     if (dHandle.storeEnergy <= -17396.145 and dHandle.storeEnergy > -20063.1 and self.lock == 0) or (self.potistate == 0 and self.lock > 0):
                         if self.potistate != 0:
                             self.newPotistate = 0
@@ -404,6 +429,41 @@ class Pumpe(th.Thread):
                 time.sleep(0.002)
         for pin in self.control_pins:
             GPIO.output(pin, 0)
+            
+class Starting_led(th.Thread):
+    def __init__(self):
+        th.Thread.__init__(self)
+        # LED strip configuration:
+        self.LED_COUNT      = 20      # Number of LED pixels.
+        self.LED_PIN        = 18      # GPIO pin connected to the pixels (18 uses PWM!).
+        #self.LED_PIN       = 10      # GPIO pin connected to the pixels (10 uses SPI /dev/spidev0.0).
+        self.LED_FREQ_HZ    = 800000  # LED signal frequency in hertz (usually 800khz)
+        self.LED_DMA        = 10      # DMA channel to use for generating signal (try 10)
+        self.LED_BRIGHTNESS = 255     # Set to 0 for darkest and 255 for brightest
+        self.LED_INVERT     = False   # True to invert the signal (when using NPN transistor level shift)
+        self.LED_CHANNEL    = 0       # set to '1' for GPIOs 13, 19, 41, 45 or 53
+        self.active = 1
+        self.setSpeed = 0.1
+        self.initiate = 0
+        
+        self.strip = Adafruit_NeoPixel(self.LED_COUNT, self.LED_PIN, self.LED_FREQ_HZ, self.LED_DMA, self.LED_INVERT, self.LED_BRIGHTNESS, self.LED_CHANNEL)
+        self.strip.begin()
+    
+    def run(self):
+        while not dHandle.getCloseServer():
+            if self.active == 1:
+                for i in range(self.strip.numPixels()):
+                    for z in range(9):
+                        self.strip.setPixelColor(i-z, Color(255-((z/8)*255),255-((z/8)*255),255-((z/8)*255)))
+                    strip.show()
+                    time.sleep(self.setSpeed-(pumpe.potistate/12*0.1))
+            if (dHandle.ssh == 0 and self.initiate == 0) or self.setActive == 0:
+                self.active = 0
+                self.initiate = 1
+                for i in range(self.strip.numPixels()):
+                    self.strip.setPixelColor(i, Color(255, 255, 255))
+            else:
+                active = 1
 
 #Funktionen des Programms
 def log(text, bez):
@@ -661,6 +721,8 @@ def SSH(mode):
             channel.close()
         ssh_client.close()
         log("SSH-Verbindung geschlossen", "Main")
+        dHandle.ssh = 0
+        
 
 #########################################################################
 #Programm
@@ -668,8 +730,12 @@ log("Brain aktiv", "Main")
 
 #Definiere dHandle als Variable des Typs DataHandle()
 dHandle = DataHandle()
+
 pumpe = Pumpe()
 pumpe.start()
+
+LED = Starting_led()
+LED.start()
 
 if not "noNetwork" in sys.argv:
     #starte Server als Thread

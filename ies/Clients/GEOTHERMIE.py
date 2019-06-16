@@ -188,7 +188,7 @@ class UserData():
             self.beginShowEnergy = int(data[9].strip())
             self.maxLED = float(data[13].strip())
             self.minLED = float(data[16].strip())
-            self.normFaktor = (sum([int(chantemp[i].value) for i in range(0,4)])/4)-30
+            self.normFaktor = (sum([int(chantemp[i].value) for i in range(0,4) if i != 1])/3)-30
 
 #Funktionen des Programms
 def log(text, bez):
@@ -322,7 +322,7 @@ while not dHandle.getCloseServer():
     log("Value: "+str([int(chantemp[i].value) for i in range(0,4)]), "Main")
     log("Voltage: "+str([chantemp[i].voltage for i in range(0,4)]), "Main")
     
-    averageTemp = int(int(dHandle.output[4])*((sum([int(chantemp[i].value) for i in range(0,4)])/4-userData.normFaktor)/(userData.maxWert-userData.normFaktor)))
+    averageTemp = int(int(dHandle.output[4])*((sum([int(chantemp[i].value) for i in range(0,4) if i != 1])/3-userData.normFaktor)/(userData.maxWert-userData.normFaktor)))
     if averageTemp < 0:
         averageTemp = 0
     

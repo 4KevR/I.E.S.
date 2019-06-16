@@ -328,6 +328,7 @@ while not dHandle.getCloseServer():
                     else:
                         dHandle.output[5] = line.strip().split(" ")[1]+" off"
                     dHandle.openrequests.append(line.strip().split(" "))
+                    log(str(dHandle.openrequests[-1]), "Main")
                     log("Request zu vorhandenen Requests hinzugefügt", "Main")
                 except IndexError:
                     pass

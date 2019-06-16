@@ -12,9 +12,8 @@ from pathlib import Path
 import os
 from neopixel import *
 import multiprocessing
-import ctypes
-import numpy as np
 import queue
+from ast import literal_eval
 
 sys.path.append("/home/BIOGAS/.local/lib/python3.5/site-packages")
 
@@ -55,7 +54,7 @@ class DataHandle():
         self.__closeServer = 0
         self.__verbraucher = {
             "Lampe":[1000,26,0],
-            "Waschmaschiene":[3000,20,0]
+            "Waschmaschine":[3000,20,0]
             }
         
     def setCloseServer(self):
@@ -179,7 +178,7 @@ def runLED(minLED, maxLED, beginShow, maxWert):
                             data[0] = int(prev[0])
                             data[1] = int(prev[1])
                             try:
-                                data[2] = dict(prev[2])
+                                data[2] = literal_eval(prev[2])
                             except ValueError:
                                 data[2] = int(prev[2])
                             actual = 1
@@ -303,8 +302,8 @@ def connect_server():
 def handleData():
     dHandle.input = dHandle.input.split("||")
     if dHandle.input[0].strip() == "turnoff":
-        if dHandle.getState("Waschmaschiene") == 1:
-            dHandle.invertState("Waschmaschiene")
+        if dHandle.getState("Waschmaschine") == 1:
+            dHandle.invertState("Waschmaschine")
         if dHandle.getState("Lampe") == 1:
             dHandle.invertState("Lampe")
     elif dHandle.input[0].strip() != "none":
