@@ -274,6 +274,7 @@ def handleData():
             path = "/var/www/html/input/"+request+".req"
             file = Path(path)
             if file.is_file():
+                time.sleep(0.05)
                 with open(path, "r") as readRequest:
                     if readRequest.readlines()[0] == "accepted":
                         dHandle.invertState(request.split(" ")[1])

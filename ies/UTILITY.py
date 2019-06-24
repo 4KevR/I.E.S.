@@ -70,6 +70,6 @@ elif sys.argv[1] == "kill":
     time.sleep(0.7)
     os.system("screen -dmS button python3 /home/BRAIN/ies/BUTTON.py")
 elif sys.argv[1] == "start":
-    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS execute python3 /home/BRAIN/ies/BRAIN.py'))
+    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmSL execute terminallog.txt python3 /home/BRAIN/ies/BRAIN.py'))
     
 print("UTILITY completed")

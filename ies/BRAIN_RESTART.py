@@ -8,7 +8,7 @@ import sys
 
 time.sleep(3)
 if sys.argv[1] == "restart":
-    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS execute python3 /home/BRAIN/ies/BRAIN.py'))
+    task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmSL execute terminallog.txt python3 /home/BRAIN/ies/BRAIN.py'))
 elif sys.argv[1] == "reboot":
     task=os.popen('echo %s|sudo -S %s'%('serverAI50', '/sbin/shutdown -r now'))
 elif sys.argv[1] == "shutdown":
