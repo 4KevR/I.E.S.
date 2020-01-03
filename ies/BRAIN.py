@@ -14,6 +14,7 @@ import RPi.GPIO as GPIO
 from neopixel import *
 
 sys.path.append("/home/PHOTOVOLTAIK/.local/lib/python3.5/site-packages")
+task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -dmS light python3 /home/BRAIN/rpi_ws281x/python/examples/strandtest.py'))
 
 #GPIO-Pins
 GPIO.setmode(GPIO.BCM)
@@ -736,6 +737,7 @@ def queue(command):
     if command == "close" or command == "restart" or command == "clean restart" or command == "reboot" or command == "shutdown":
         log("Befehl zum Beenden des Programms", "Main")
         dHandle.setCloseServer()
+        task=os.popen('echo %s|sudo -S %s'%('serverAI50', 'screen -XS light kill'))
         with open("/var/www/html/input/queue.txt", "w") as filedelete:
             filedelete.write("")
         with open("/var/www/html/output/savedEnergy.txt", "w") as saveNewEnergy:
@@ -790,7 +792,11 @@ def SSH(mode):
                 #time.sleep(0.3)
                 channel.send("killall screen\n")
                 time.sleep(0.2)
-                channel.send("screen -dmSL execute terminallog.txt python3 /home/"+USERNAME[i]+"/ies/"+USERNAME[i]+".py\n")
+                # channel.send("rm /home/"+USERNAME[i]+"/screenlog.0\n")
+                # time.sleep(0.2)
+                # channel.send("touch /home/"+USERNAME[i]+"/screenlog.0\n")
+                time.sleep(0.2)
+                channel.send("screen -dmS execute python3 /home/"+USERNAME[i]+"/ies/"+USERNAME[i]+".py\n")
                 time.sleep(0.2)
                 channel.close()
         if mode == 1 or mode == 2:
